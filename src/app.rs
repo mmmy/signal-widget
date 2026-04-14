@@ -306,7 +306,12 @@ impl SignalDeskApp {
             420.0
         };
         let popover_width = desired_width.clamp(1.0, max_width);
-        let compact_layout = popover_width < 320.0;
+        // Switch to compact layout when wide row columns + button can no longer fit safely.
+        let wide_columns_width = 96.0 + 44.0 + 88.0 + 32.0;
+        let wide_button_width = 92.0;
+        let wide_spacing_width = 40.0;
+        let wide_layout_min_width = wide_columns_width + wide_button_width + wide_spacing_width;
+        let compact_layout = popover_width < wide_layout_min_width;
         let estimated_popover_height = 380.0_f32;
         let preferred_pos = anchor.left_bottom() + egui::vec2(0.0, 6.0);
         let min_x = viewport.left() + margin;
