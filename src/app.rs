@@ -297,6 +297,25 @@ impl SignalDeskApp {
         let Some(anchor) = self.hover_anchor else {
             return false;
         };
+        let viewport = ctx.input(|i| i.screen_rect());
+        let margin = 8.0_f32;
+        let max_width = (viewport.width() - margin * 2.0).max(180.0);
+        let desired_width = if self.config.ui.edge_mode {
+            (self.config.ui.edge_width - 16.0).clamp(180.0, 320.0)
+        } else {
+            420.0
+        };
+        let popover_width = desired_width.min(max_width);
+        let estimated_popover_height = 380.0_f32;
+        let preferred_pos = anchor.left_bottom() + egui::vec2(0.0, 6.0);
+        let min_x = viewport.left() + margin;
+        let max_x = (viewport.right() - margin - popover_width).max(min_x);
+        let min_y = viewport.top() + margin;
+        let max_y = (viewport.bottom() - margin - estimated_popover_height).max(min_y);
+        let popover_pos = egui::pos2(
+            preferred_pos.x.clamp(min_x, max_x),
+            preferred_pos.y.clamp(min_y, max_y),
+        );
 
         let rows = build_unread_items(
             &self.config.groups,
@@ -312,12 +331,13 @@ impl SignalDeskApp {
         let mut clicked_key = None;
         let popover = egui::Area::new(egui::Id::new("unread_hover_popover"))
             .order(egui::Order::Foreground)
-            .fixed_pos(anchor.left_bottom() + egui::vec2(0.0, 6.0))
+            .fixed_pos(popover_pos)
             .interactable(true)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style())
                     .show(ui, |ui| {
-                        ui.set_min_width(420.0);
+                        ui.set_min_width(popover_width);
+                        ui.set_max_width(popover_width);
                         ui.vertical(|ui| {
                             ui.label(egui::RichText::new(title).strong());
                             ui.separator();
