@@ -26,6 +26,7 @@ pub struct SignalDeskApp {
     poller: PollerHandle,
     signals: HashMap<SignalKey, SignalState>,
     pending_read: HashSet<SignalKey>,
+    local_read_floor_t: HashMap<SignalKey, i64>,
     hover_panel: Option<HoverPanelState>,
     hover_anchor: Option<egui::Rect>,
     last_poll_ms: Option<i64>,
@@ -70,6 +71,7 @@ impl SignalDeskApp {
             poller,
             signals: HashMap::new(),
             pending_read: HashSet::new(),
+            local_read_floor_t: HashMap::new(),
             hover_panel: None,
             hover_anchor: None,
             last_poll_ms: None,
@@ -90,6 +92,7 @@ impl SignalDeskApp {
                 }
                 PollerEvent::SyncFailed { key, error } => {
                     let was_pending = self.pending_read.remove(&key);
+                    self.local_read_floor_t.remove(&key);
                     if was_pending {
                         if let Some(state) = self.signals.get_mut(&key) {
                             state.read = false;
@@ -109,7 +112,15 @@ impl SignalDeskApp {
         for row in &page.data {
             for (signal_type, state) in &row.signals {
                 let key = SignalKey::new(row.symbol.clone(), row.period.clone(), signal_type.clone());
-                next.insert(key, state.clone());
+                let mut next_state = state.clone();
+                if let Some(&floor_t) = self.local_read_floor_t.get(&key) {
+                    if next_state.t <= floor_t {
+                        next_state.read = true;
+                    } else {
+                        self.local_read_floor_t.remove(&key);
+                    }
+                }
+                next.insert(key, next_state);
             }
         }
         self.signals = next;
@@ -186,6 +197,9 @@ impl SignalDeskApp {
             return;
         }
 
+        if let Some(signal_t) = self.signals.get(&key).map(|signal| signal.t) {
+            self.local_read_floor_t.insert(key.clone(), signal_t);
+        }
         if let Some(signal) = self.signals.get_mut(&key) {
             signal.read = true;
         }
@@ -197,6 +211,7 @@ impl SignalDeskApp {
             .send(PollerCommand::MarkRead { key: key.clone(), read: true })
         {
             self.pending_read.remove(&key);
+            self.local_read_floor_t.remove(&key);
             if let Some(signal) = self.signals.get_mut(&key) {
                 signal.read = false;
             }
