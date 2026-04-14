@@ -86,9 +86,11 @@ impl SignalDeskApp {
                     self.last_error = Some(error);
                 }
                 PollerEvent::SyncFailed { key, error } => {
-                    self.pending_read.remove(&key);
-                    if let Some(state) = self.signals.get_mut(&key) {
-                        state.read = false;
+                    let was_pending = self.pending_read.remove(&key);
+                    if was_pending {
+                        if let Some(state) = self.signals.get_mut(&key) {
+                            state.read = false;
+                        }
                     }
                     self.last_error = Some(format!("sync failed [{} {} {}]: {}", key.symbol, key.period, key.signal_type, error));
                 }
@@ -155,18 +157,25 @@ impl SignalDeskApp {
         for period in &group.periods {
             for signal_type in &group.signal_types {
                 let key = SignalKey::new(group.symbol.clone(), period.clone(), signal_type.clone());
-                let Some(signal) = self.signals.get_mut(&key) else {
+                let Some(is_unread) = self.signals.get(&key).map(|signal| !signal.read) else {
                     continue;
                 };
-                if signal.read {
+                if !is_unread {
                     continue;
                 }
-                signal.read = true;
+                if let Some(signal) = self.signals.get_mut(&key) {
+                    signal.read = true;
+                }
+                self.pending_read.insert(key.clone());
                 if let Err(err) = self
                     .poller
                     .command_tx
                     .send(PollerCommand::MarkRead { key: key.clone(), read: true })
                 {
+                    self.pending_read.remove(&key);
+                    if let Some(signal) = self.signals.get_mut(&key) {
+                        signal.read = false;
+                    }
                     warn!("send mark-read command failed: {}", err);
                 }
             }
