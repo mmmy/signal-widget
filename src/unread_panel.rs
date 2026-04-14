@@ -74,6 +74,7 @@ mod tests {
         let k1 = SignalKey::new("BTCUSDT", "15", "vegas");
         let k2 = SignalKey::new("ETHUSDT", "15", "vegas");
         let k3 = SignalKey::new("BTCUSDT", "60", "vegas");
+        let k4 = SignalKey::new("ETHUSDT", "60", "vegas");
 
         signals.insert(
             k1.clone(),
@@ -99,13 +100,23 @@ mod tests {
                 read: true,
             },
         );
+        signals.insert(
+            k4.clone(),
+            SignalState {
+                sd: -1,
+                t: 250,
+                read: false,
+            },
+        );
 
         let mut pending = HashSet::new();
         pending.insert(k2.clone());
 
         let rows = build_unread_items(&groups, &signals, &pending, &HoverPanelTarget::Global);
-        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].key, k1);
+        assert_eq!(rows[1].key, k4);
+        assert!(rows[0].trigger_time_ms >= rows[1].trigger_time_ms);
     }
 
     #[test]
@@ -145,6 +156,9 @@ mod tests {
     fn close_deadline_set_and_cleared_by_hover_state() {
         let deadline = next_close_deadline_ms(false, false, 1000, None, 200);
         assert_eq!(deadline, Some(1200));
+
+        let preserved = next_close_deadline_ms(false, false, 1050, deadline, 200);
+        assert_eq!(preserved, deadline);
 
         let keep_open = next_close_deadline_ms(true, false, 1050, deadline, 200);
         assert_eq!(keep_open, None);
