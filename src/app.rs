@@ -10,7 +10,7 @@ use crate::api::{SignalPage, SignalState};
 use crate::config::{AppConfig, GroupConfig};
 use crate::domain::{compare_period_desc, period_to_millis, Side, SignalKey};
 use crate::poller::{PollerCommand, PollerEvent, PollerHandle};
-use crate::unread_panel::{HoverPanelState, HoverPanelTarget};
+use crate::unread_panel::{build_unread_items, HoverPanelState, HoverPanelTarget};
 
 #[derive(Clone, Copy, Debug, Default)]
 struct BarCell {
@@ -147,17 +147,20 @@ impl SignalDeskApp {
             .flat_map(|period| group.signal_types.iter().map(move |signal_type| (period, signal_type)))
             .filter_map(|(period, signal_type)| {
                 let key = SignalKey::new(group.symbol.clone(), period.clone(), signal_type.clone());
-                self.signals.get(&key)
+                self.signals.get(&key).map(|sig| (key, sig))
             })
-            .filter(|sig| !sig.read)
+            .filter(|(key, sig)| !sig.read && !self.pending_read.contains(key))
             .count()
     }
 
     fn total_unread_count(&self) -> usize {
-        self.signals
-            .iter()
-            .filter(|(key, sig)| !sig.read && !self.pending_read.contains(*key))
-            .count()
+        build_unread_items(
+            &self.config.groups,
+            &self.signals,
+            &self.pending_read,
+            &HoverPanelTarget::Global,
+        )
+        .len()
     }
 
     fn mark_group_read(&mut self, group: &GroupConfig) {
@@ -294,6 +297,7 @@ impl eframe::App for SignalDeskApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_poller_events();
         self.apply_window_mode(ctx);
+        self.hover_panel = None;
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
