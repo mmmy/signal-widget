@@ -25,7 +25,6 @@ pub struct UnreadItemView {
     pub signal_type: String,
     pub side: Side,
     pub trigger_time_ms: i64,
-    pub pending: bool,
 }
 
 pub fn build_unread_items(
@@ -35,6 +34,7 @@ pub fn build_unread_items(
     target: &HoverPanelTarget,
 ) -> Vec<UnreadItemView> {
     let mut rows = Vec::new();
+    let mut global_seen = HashSet::new();
 
     for group in groups.iter().filter(|g| g.enabled) {
         if let HoverPanelTarget::Group(target_group_id) = target {
@@ -46,6 +46,9 @@ pub fn build_unread_items(
         for period in &group.periods {
             for signal_type in &group.signal_types {
                 let key = SignalKey::new(&group.symbol, period, signal_type);
+                if matches!(target, HoverPanelTarget::Global) && !global_seen.insert(key.clone()) {
+                    continue;
+                }
                 let Some(sig) = signals.get(&key) else {
                     continue;
                 };
@@ -64,7 +67,6 @@ pub fn build_unread_items(
                     signal_type: key.signal_type.clone(),
                     side: Side::from_code(sig.sd),
                     trigger_time_ms: sig.t,
-                    pending,
                 });
             }
         }
@@ -224,5 +226,43 @@ mod tests {
 
         let keep_open = next_close_deadline_ms(true, false, 1050, deadline, 200);
         assert_eq!(keep_open, None);
+    }
+
+    #[test]
+    fn global_dedupes_duplicate_signal_keys_across_groups() {
+        let groups = vec![
+            group("g1", "BTCUSDT", &["15"], &["vegas"]),
+            group("g2", "BTCUSDT", &["15"], &["vegas"]),
+        ];
+        let mut signals = HashMap::new();
+        let key = SignalKey::new("BTCUSDT", "15", "vegas");
+        signals.insert(
+            key.clone(),
+            SignalState {
+                sd: 1,
+                t: 300,
+                read: false,
+            },
+        );
+
+        let global_rows =
+            build_unread_items(&groups, &signals, &HashSet::new(), &HoverPanelTarget::Global);
+        assert_eq!(global_rows.len(), 1);
+        assert_eq!(global_rows[0].key, key);
+
+        let g1_rows = build_unread_items(
+            &groups,
+            &signals,
+            &HashSet::new(),
+            &HoverPanelTarget::Group("g1".into()),
+        );
+        let g2_rows = build_unread_items(
+            &groups,
+            &signals,
+            &HashSet::new(),
+            &HoverPanelTarget::Group("g2".into()),
+        );
+        assert_eq!(g1_rows.len(), 1);
+        assert_eq!(g2_rows.len(), 1);
     }
 }
