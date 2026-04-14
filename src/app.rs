@@ -360,7 +360,7 @@ fn paint_60_bar_line(ui: &mut egui::Ui, cells: &[BarCell; 60]) {
     for (idx, cell) in cells.iter().enumerate() {
         let x = rect.left() + idx as f32 * (bar_width + gap);
         let slot = egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(bar_width, rect.height()));
-        painter.rect_filled(slot, 1.0, Color32::from_rgb(24, 46, 55));
+        painter.rect_filled(slot, 1.0, Color32::from_rgb(236, 239, 242));
 
         if cell.side.is_some() || cell.mixed {
             let active = slot.shrink2(egui::vec2(0.6, 2.0));
