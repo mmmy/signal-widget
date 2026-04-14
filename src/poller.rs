@@ -21,6 +21,7 @@ pub enum PollerCommand {
 pub enum PollerEvent {
     Snapshot { fetched_at_ms: i64, page: SignalPage },
     PollFailed { error: String },
+    MarkReadSynced { key: SignalKey },
     SyncFailed { key: SignalKey, error: String },
 }
 
@@ -59,8 +60,12 @@ impl PollerHandle {
                     }
                     Ok(PollerCommand::MarkRead { key, read }) => {
                         let result = runtime.block_on(client.mark_read(&key, read));
-                        if let Err(err) = result {
-                            emit_sync_err(&event_tx, key, err.to_string());
+                        match result {
+                            Ok(true) => emit_mark_read_synced(&event_tx, key),
+                            Ok(false) => {
+                                emit_sync_err(&event_tx, key, "server returned false".to_string())
+                            }
+                            Err(err) => emit_sync_err(&event_tx, key, err.to_string()),
                         }
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -158,5 +163,12 @@ fn emit_sync_err(event_tx: &mpsc::Sender<PollerEvent>, key: SignalKey, error: St
     let event = PollerEvent::SyncFailed { key, error };
     if let Err(err) = event_tx.send(event) {
         tracing::error!("send sync failed event error: {}", err);
+    }
+}
+
+fn emit_mark_read_synced(event_tx: &mpsc::Sender<PollerEvent>, key: SignalKey) {
+    let event = PollerEvent::MarkReadSynced { key };
+    if let Err(err) = event_tx.send(event) {
+        tracing::error!("send mark-read synced event error: {}", err);
     }
 }
