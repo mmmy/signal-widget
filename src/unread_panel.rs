@@ -56,20 +56,23 @@ mod tests {
     use crate::config::GroupConfig;
     use crate::domain::SignalKey;
 
-    fn group(id: &str, symbol: &str) -> GroupConfig {
+    fn group(id: &str, symbol: &str, periods: &[&str], signal_types: &[&str]) -> GroupConfig {
         GroupConfig {
             id: id.to_string(),
             name: id.to_string(),
             symbol: symbol.to_string(),
-            periods: vec!["15".into(), "60".into()],
-            signal_types: vec!["vegas".into()],
+            periods: periods.iter().map(|v| (*v).to_string()).collect(),
+            signal_types: signal_types.iter().map(|v| (*v).to_string()).collect(),
             enabled: true,
         }
     }
 
     #[test]
     fn global_contains_only_effective_unread_sorted_desc() {
-        let groups = vec![group("g1", "BTCUSDT"), group("g2", "ETHUSDT")];
+        let groups = vec![
+            group("g1", "BTCUSDT", &["15", "60"], &["vegas"]),
+            group("g2", "ETHUSDT", &["15", "60"], &["vegas"]),
+        ];
         let mut signals = HashMap::new();
         let k1 = SignalKey::new("BTCUSDT", "15", "vegas");
         let k2 = SignalKey::new("ETHUSDT", "15", "vegas");
@@ -121,10 +124,15 @@ mod tests {
 
     #[test]
     fn group_target_filters_to_single_group() {
-        let groups = vec![group("g1", "BTCUSDT"), group("g2", "ETHUSDT")];
+        let groups = vec![
+            group("g1", "BTCUSDT", &["15"], &["vegas"]),
+            group("g2", "BTCUSDT", &["60"], &["trend"]),
+            group("g3", "ETHUSDT", &["15"], &["vegas"]),
+        ];
         let mut signals = HashMap::new();
-        let k1 = SignalKey::new("BTCUSDT", "15", "vegas");
-        let k2 = SignalKey::new("ETHUSDT", "15", "vegas");
+        let k1 = SignalKey::new("BTCUSDT", "15", "vegas"); // matches g1 only
+        let k2 = SignalKey::new("BTCUSDT", "60", "trend"); // matches g2 only (same symbol, different group id)
+        let k3 = SignalKey::new("ETHUSDT", "15", "vegas"); // matches g3
         signals.insert(
             k1.clone(),
             SignalState {
@@ -138,6 +146,14 @@ mod tests {
             SignalState {
                 sd: -1,
                 t: 200,
+                read: false,
+            },
+        );
+        signals.insert(
+            k3.clone(),
+            SignalState {
+                sd: 1,
+                t: 100,
                 read: false,
             },
         );
@@ -159,6 +175,9 @@ mod tests {
 
         let preserved = next_close_deadline_ms(false, false, 1050, deadline, 200);
         assert_eq!(preserved, deadline);
+
+        let keep_open_from_panel = next_close_deadline_ms(false, true, 1050, deadline, 200);
+        assert_eq!(keep_open_from_panel, None);
 
         let keep_open = next_close_deadline_ms(true, false, 1050, deadline, 200);
         assert_eq!(keep_open, None);
