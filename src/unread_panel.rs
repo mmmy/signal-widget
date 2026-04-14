@@ -29,22 +29,65 @@ pub struct UnreadItemView {
 }
 
 pub fn build_unread_items(
-    _groups: &[GroupConfig],
-    _signals: &HashMap<SignalKey, SignalState>,
-    _pending_read: &HashSet<SignalKey>,
-    _target: &HoverPanelTarget,
+    groups: &[GroupConfig],
+    signals: &HashMap<SignalKey, SignalState>,
+    pending_read: &HashSet<SignalKey>,
+    target: &HoverPanelTarget,
 ) -> Vec<UnreadItemView> {
-    panic!("red phase: build_unread_items not implemented");
+    let mut rows = Vec::new();
+
+    for group in groups.iter().filter(|g| g.enabled) {
+        if let HoverPanelTarget::Group(target_group_id) = target {
+            if &group.id != target_group_id {
+                continue;
+            }
+        }
+
+        for period in &group.periods {
+            for signal_type in &group.signal_types {
+                let key = SignalKey::new(&group.symbol, period, signal_type);
+                let Some(sig) = signals.get(&key) else {
+                    continue;
+                };
+
+                let pending = pending_read.contains(&key);
+                let effective_read = sig.read || pending;
+                if effective_read {
+                    continue;
+                }
+
+                rows.push(UnreadItemView {
+                    key: key.clone(),
+                    group_id: group.id.clone(),
+                    symbol: key.symbol.clone(),
+                    period: key.period.clone(),
+                    signal_type: key.signal_type.clone(),
+                    side: Side::from_code(sig.sd),
+                    trigger_time_ms: sig.t,
+                    pending,
+                });
+            }
+        }
+    }
+
+    rows.sort_by(|a, b| b.trigger_time_ms.cmp(&a.trigger_time_ms));
+    rows
 }
 
 pub fn next_close_deadline_ms(
-    _trigger_hovered: bool,
-    _panel_hovered: bool,
-    _now_ms: i64,
-    _current_deadline_ms: Option<i64>,
-    _delay_ms: i64,
+    trigger_hovered: bool,
+    panel_hovered: bool,
+    now_ms: i64,
+    current_deadline_ms: Option<i64>,
+    delay_ms: i64,
 ) -> Option<i64> {
-    panic!("red phase: next_close_deadline_ms not implemented");
+    if trigger_hovered || panel_hovered {
+        None
+    } else if current_deadline_ms.is_some() {
+        current_deadline_ms
+    } else {
+        Some(now_ms + delay_ms)
+    }
 }
 
 #[cfg(test)]
