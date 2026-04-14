@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -10,6 +10,7 @@ use crate::api::{SignalPage, SignalState};
 use crate::config::{AppConfig, GroupConfig};
 use crate::domain::{compare_period_desc, period_to_millis, Side, SignalKey};
 use crate::poller::{PollerCommand, PollerEvent, PollerHandle};
+use crate::unread_panel::HoverPanelState;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct BarCell {
@@ -23,6 +24,8 @@ pub struct SignalDeskApp {
     config_path: PathBuf,
     poller: PollerHandle,
     signals: HashMap<SignalKey, SignalState>,
+    pending_read: HashSet<SignalKey>,
+    hover_panel: Option<HoverPanelState>,
     last_poll_ms: Option<i64>,
     last_meta: Option<(u64, u32, u32)>,
     last_error: Option<String>,
@@ -64,6 +67,8 @@ impl SignalDeskApp {
             config_path,
             poller,
             signals: HashMap::new(),
+            pending_read: HashSet::new(),
+            hover_panel: None,
             last_poll_ms: None,
             last_meta: None,
             last_error: None,
@@ -81,15 +86,14 @@ impl SignalDeskApp {
                     self.last_error = Some(error);
                 }
                 PollerEvent::SyncFailed { key, error } => {
+                    self.pending_read.remove(&key);
                     if let Some(state) = self.signals.get_mut(&key) {
                         state.read = false;
                     }
                     self.last_error = Some(format!("sync failed [{} {} {}]: {}", key.symbol, key.period, key.signal_type, error));
                 }
                 PollerEvent::MarkReadSynced { key } => {
-                    // Pending-read tracking is not wired in app state yet.
-                    // Keep this branch as a no-op to satisfy event exhaustiveness.
-                    let _ = key;
+                    self.pending_read.remove(&key);
                 }
             }
         }
