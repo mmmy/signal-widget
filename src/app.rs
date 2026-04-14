@@ -10,7 +10,7 @@ use crate::api::{SignalPage, SignalState};
 use crate::config::{AppConfig, GroupConfig};
 use crate::domain::{compare_period_desc, period_to_millis, Side, SignalKey};
 use crate::poller::{PollerCommand, PollerEvent, PollerHandle};
-use crate::unread_panel::HoverPanelState;
+use crate::unread_panel::{HoverPanelState, HoverPanelTarget};
 
 #[derive(Clone, Copy, Debug, Default)]
 struct BarCell {
@@ -153,6 +153,13 @@ impl SignalDeskApp {
             .count()
     }
 
+    fn total_unread_count(&self) -> usize {
+        self.signals
+            .iter()
+            .filter(|(key, sig)| !sig.read && !self.pending_read.contains(*key))
+            .count()
+    }
+
     fn mark_group_read(&mut self, group: &GroupConfig) {
         for period in &group.periods {
             for signal_type in &group.signal_types {
@@ -226,11 +233,17 @@ impl SignalDeskApp {
                 ui.heading(&group.symbol);
                 ui.label(egui::RichText::new(&group.name).small().color(Color32::LIGHT_GRAY));
                 if unread > 0 {
-                    ui.label(
+                    let unread_badge = ui.label(
                         egui::RichText::new(format!("{unread} unread"))
                             .color(Color32::BLACK)
                             .background_color(Color32::from_rgb(245, 173, 0)),
                     );
+                    if unread_badge.hovered() {
+                        self.hover_panel = Some(HoverPanelState {
+                            target: HoverPanelTarget::Group(group.id.clone()),
+                            close_deadline_ms: None,
+                        });
+                    }
                 }
                 if ui.small_button("全部已读").clicked() {
                     self.mark_group_read(group);
@@ -303,6 +316,19 @@ impl eframe::App for SignalDeskApp {
                     .changed();
                 ui.checkbox(&mut self.config.ui.notifications, "通知");
                 ui.checkbox(&mut self.config.ui.sound, "声音");
+
+                let total_unread = self.total_unread_count();
+                let total_badge = ui.label(
+                    egui::RichText::new(format!("Total unread: {total_unread}"))
+                        .color(Color32::BLACK)
+                        .background_color(Color32::from_rgb(245, 173, 0)),
+                );
+                if total_badge.hovered() {
+                    self.hover_panel = Some(HoverPanelState {
+                        target: HoverPanelTarget::Global,
+                        close_deadline_ms: None,
+                    });
+                }
 
                 if edge_changed || top_changed || width_changed {
                     self.save_config();
