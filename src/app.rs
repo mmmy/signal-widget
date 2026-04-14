@@ -3,6 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use chrono::TimeZone;
 use eframe::egui::{self, Color32};
 use tracing::{info, warn};
 
@@ -307,9 +308,9 @@ impl SignalDeskApp {
         };
         let popover_width = desired_width.clamp(1.0, max_width);
         // Switch to compact layout when wide row columns + button can no longer fit safely.
-        let wide_columns_width = 96.0 + 44.0 + 88.0 + 32.0;
+        let wide_columns_width = 96.0 + 44.0 + 88.0 + 32.0 + 112.0;
         let wide_button_width = 92.0;
-        let wide_spacing_width = 40.0;
+        let wide_spacing_width = 48.0;
         let wide_layout_min_width = wide_columns_width + wide_button_width + wide_spacing_width;
         let compact_layout = popover_width < wide_layout_min_width;
         let estimated_popover_height = 380.0_f32;
@@ -358,6 +359,9 @@ impl SignalDeskApp {
                                     }
 
                                     for row in &rows {
+                                        let pending = self.pending_read.contains(&row.key);
+                                        let button_text = if pending { "处理中..." } else { "标记已读" };
+                                        let time_text = format_trigger_time_local(row.trigger_time_ms);
                                         if compact_layout {
                                             ui.vertical(|ui| {
                                                 ui.horizontal_wrapped(|ui| {
@@ -370,7 +374,14 @@ impl SignalDeskApp {
                                                     ui.label(&row.signal_type);
                                                     ui.label(side_rich_text(row.side));
                                                 });
-                                                if ui.button("标记已读").clicked() {
+                                                ui.label(egui::RichText::new(time_text.as_str()).monospace());
+                                                if ui
+                                                    .add_enabled(
+                                                        !pending,
+                                                        egui::Button::new(button_text),
+                                                    )
+                                                    .clicked()
+                                                {
                                                     clicked_key = Some(row.key.clone());
                                                 }
                                             });
@@ -396,7 +407,20 @@ impl SignalDeskApp {
                                                     [32.0, 18.0],
                                                     egui::Label::new(side_rich_text(row.side)),
                                                 );
-                                                if ui.button("标记已读").clicked() {
+                                                ui.add_sized(
+                                                    [112.0, 18.0],
+                                                    egui::Label::new(
+                                                        egui::RichText::new(time_text.as_str())
+                                                            .monospace(),
+                                                    ),
+                                                );
+                                                if ui
+                                                    .add_enabled(
+                                                        !pending,
+                                                        egui::Button::new(button_text),
+                                                    )
+                                                    .clicked()
+                                                {
                                                     clicked_key = Some(row.key.clone());
                                                 }
                                             });
@@ -632,5 +656,12 @@ fn side_rich_text(side: Side) -> egui::RichText {
         Side::Bull => egui::RichText::new("多").color(Color32::from_rgb(48, 181, 122)),
         Side::Bear => egui::RichText::new("空").color(Color32::from_rgb(214, 84, 105)),
         Side::Unknown => egui::RichText::new("未知").color(Color32::LIGHT_GRAY),
+    }
+}
+
+fn format_trigger_time_local(trigger_time_ms: i64) -> String {
+    match chrono::Local.timestamp_millis_opt(trigger_time_ms).single() {
+        Some(dt) => dt.format("%m-%d %H:%M:%S").to_string(),
+        None => "-".to_string(),
     }
 }
