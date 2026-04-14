@@ -1,0 +1,29 @@
+api:
+  base_url: "https://your-api-host.com"
+  api_key: "replace-with-real-api-key"
+
+poll:
+  interval_secs: 8
+  page_size: 100
+
+ui:
+  edge_mode: false
+  edge_width: 240
+  always_on_top: true
+  notifications: true
+  sound: false
+
+groups:
+  - id: "group-1"
+    name: "BTC Main"
+    symbol: "BTCUSDT"
+    periods: ["10D", "W", "4D", "3D", "2D", "D", "720", "480", "360", "240", "180", "120", "90", "60", "45", "30", "20", "15", "10", "8", "5", "4", "3", "2", "1"]
+    signal_types: ["vegas"]
+    enabled: true
+
+  - id: "group-2"
+    name: "ETH Main"
+    symbol: "ETHUSDT"
+    periods: ["10D", "W", "4D", "3D", "2D", "D", "720", "480", "360", "240", "180", "120", "90", "60", "45", "30", "20", "15", "10", "8", "5", "4", "3", "2", "1"]
+    signal_types: ["divMacd"]
+    enabled: true

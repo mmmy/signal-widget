@@ -1,0 +1,12 @@
+/target
+.claude
+
+# Local runtime config (may contain secrets)
+config.yaml
+
+# Editor/OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+Cargo.lock
