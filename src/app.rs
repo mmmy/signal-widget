@@ -86,6 +86,11 @@ impl SignalDeskApp {
                     }
                     self.last_error = Some(format!("sync failed [{} {} {}]: {}", key.symbol, key.period, key.signal_type, error));
                 }
+                PollerEvent::MarkReadSynced { key } => {
+                    // Pending-read tracking is not wired in app state yet.
+                    // Keep this branch as a no-op to satisfy event exhaustiveness.
+                    let _ = key;
+                }
             }
         }
     }
