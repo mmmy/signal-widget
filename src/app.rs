@@ -359,8 +359,6 @@ impl SignalDeskApp {
                                     }
 
                                     for row in &rows {
-                                        let pending = self.pending_read.contains(&row.key);
-                                        let button_text = if pending { "处理中..." } else { "标记已读" };
                                         let time_text = format_trigger_time_local(row.trigger_time_ms);
                                         if compact_layout {
                                             ui.vertical(|ui| {
@@ -375,13 +373,7 @@ impl SignalDeskApp {
                                                     ui.label(side_rich_text(row.side));
                                                 });
                                                 ui.label(egui::RichText::new(time_text.as_str()).monospace());
-                                                if ui
-                                                    .add_enabled(
-                                                        !pending,
-                                                        egui::Button::new(button_text),
-                                                    )
-                                                    .clicked()
-                                                {
+                                                if ui.button("标记已读").clicked() {
                                                     clicked_key = Some(row.key.clone());
                                                 }
                                             });
@@ -414,13 +406,7 @@ impl SignalDeskApp {
                                                             .monospace(),
                                                     ),
                                                 );
-                                                if ui
-                                                    .add_enabled(
-                                                        !pending,
-                                                        egui::Button::new(button_text),
-                                                    )
-                                                    .clicked()
-                                                {
+                                                if ui.button("标记已读").clicked() {
                                                     clicked_key = Some(row.key.clone());
                                                 }
                                             });
