@@ -299,13 +299,14 @@ impl SignalDeskApp {
         };
         let viewport = ctx.input(|i| i.screen_rect());
         let margin = 8.0_f32;
-        let max_width = (viewport.width() - margin * 2.0).max(180.0);
+        let max_width = (viewport.width() - margin * 2.0).max(1.0);
         let desired_width = if self.config.ui.edge_mode {
-            (self.config.ui.edge_width - 16.0).clamp(180.0, 320.0)
+            (self.config.ui.edge_width - 16.0).max(1.0)
         } else {
             420.0
         };
-        let popover_width = desired_width.min(max_width);
+        let popover_width = desired_width.clamp(1.0, max_width);
+        let compact_layout = popover_width < 320.0;
         let estimated_popover_height = 380.0_f32;
         let preferred_pos = anchor.left_bottom() + egui::vec2(0.0, 6.0);
         let min_x = viewport.left() + margin;
@@ -352,38 +353,49 @@ impl SignalDeskApp {
                                     }
 
                                     for row in &rows {
-                                        ui.horizontal(|ui| {
-                                            ui.add_sized(
-                                                [96.0, 18.0],
-                                                egui::Label::new(
-                                                    egui::RichText::new(&row.symbol).monospace(),
-                                                ),
-                                            );
-                                            ui.add_sized(
-                                                [44.0, 18.0],
-                                                egui::Label::new(
-                                                    egui::RichText::new(&row.period).monospace(),
-                                                ),
-                                            );
-                                            ui.add_sized(
-                                                [88.0, 18.0],
-                                                egui::Label::new(&row.signal_type),
-                                            );
-                                            ui.add_sized(
-                                                [32.0, 18.0],
-                                                egui::Label::new(side_rich_text(row.side)),
-                                            );
-
-                                            let is_pending = self.pending_read.contains(&row.key);
-                                            let button_text =
-                                                if is_pending { "处理中..." } else { "标记已读" };
-                                            if ui
-                                                .add_enabled(!is_pending, egui::Button::new(button_text))
-                                                .clicked()
-                                            {
-                                                clicked_key = Some(row.key.clone());
-                                            }
-                                        });
+                                        if compact_layout {
+                                            ui.vertical(|ui| {
+                                                ui.horizontal_wrapped(|ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(&row.symbol).monospace(),
+                                                    );
+                                                    ui.label(
+                                                        egui::RichText::new(&row.period).monospace(),
+                                                    );
+                                                    ui.label(&row.signal_type);
+                                                    ui.label(side_rich_text(row.side));
+                                                });
+                                                if ui.button("标记已读").clicked() {
+                                                    clicked_key = Some(row.key.clone());
+                                                }
+                                            });
+                                        } else {
+                                            ui.horizontal(|ui| {
+                                                ui.add_sized(
+                                                    [96.0, 18.0],
+                                                    egui::Label::new(
+                                                        egui::RichText::new(&row.symbol).monospace(),
+                                                    ),
+                                                );
+                                                ui.add_sized(
+                                                    [44.0, 18.0],
+                                                    egui::Label::new(
+                                                        egui::RichText::new(&row.period).monospace(),
+                                                    ),
+                                                );
+                                                ui.add_sized(
+                                                    [88.0, 18.0],
+                                                    egui::Label::new(&row.signal_type),
+                                                );
+                                                ui.add_sized(
+                                                    [32.0, 18.0],
+                                                    egui::Label::new(side_rich_text(row.side)),
+                                                );
+                                                if ui.button("标记已读").clicked() {
+                                                    clicked_key = Some(row.key.clone());
+                                                }
+                                            });
+                                        }
                                         ui.separator();
                                     }
                                 });
