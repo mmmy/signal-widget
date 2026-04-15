@@ -43,11 +43,7 @@ fn main() {
             setup_chinese_fonts(&cc.egui_ctx);
             let api_client = ApiClient::new(&config.api);
             let poller = PollerHandle::spawn(api_client, config.clone(), cc.egui_ctx.clone());
-            Ok(Box::new(SignalDeskApp::new(
-                config,
-                config_path,
-                poller,
-            )))
+            Ok(Box::new(SignalDeskApp::new(config, config_path, poller)))
         }),
     );
     if let Err(err) = result {
