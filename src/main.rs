@@ -6,7 +6,6 @@ mod app;
 mod config;
 mod core;
 mod domain;
-mod protocol;
 mod poller;
 mod unread_panel;
 

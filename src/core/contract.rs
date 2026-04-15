@@ -1,6 +1,11 @@
 use crate::config::UiConfig;
 use crate::domain::SignalKey;
-use crate::protocol::AppSnapshot;
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AppSnapshot {
+    pub unread_count: usize,
+    pub last_poll_error: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdapterId {

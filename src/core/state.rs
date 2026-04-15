@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::api::SignalState;
 use crate::domain::SignalKey;
-use crate::protocol::AppSnapshot;
+
+use super::contract::AppSnapshot;
 
 #[derive(Debug, Default, Clone)]
 pub struct AppState {
