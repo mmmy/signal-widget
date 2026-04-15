@@ -38,7 +38,7 @@ pub enum PollerEvent {
 
 pub struct PollerHandle {
     pub command_tx: mpsc::Sender<PollerCommand>,
-    pub event_rx: mpsc::Receiver<PollerEvent>,
+    event_rx: Option<mpsc::Receiver<PollerEvent>>,
     join: Option<JoinHandle<()>>,
 }
 
@@ -102,9 +102,15 @@ impl PollerHandle {
 
         Self {
             command_tx,
-            event_rx,
+            event_rx: Some(event_rx),
             join: Some(join),
         }
+    }
+
+    pub fn take_event_rx(&mut self) -> mpsc::Receiver<PollerEvent> {
+        self.event_rx
+            .take()
+            .expect("poller event receiver already taken")
     }
 }
 

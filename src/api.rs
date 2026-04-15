@@ -88,7 +88,7 @@ pub struct FetchSignalsRequest {
     pub page_size: Option<u32>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct SignalPage {
     pub total: u64,
     pub page: u32,
@@ -98,7 +98,7 @@ pub struct SignalPage {
     pub data: Vec<SignalRow>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct SignalRow {
     pub symbol: String,
     pub period: String,
@@ -108,7 +108,7 @@ pub struct SignalRow {
     pub signals: HashMap<String, SignalState>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct SignalState {
     pub sd: i32,
     pub t: i64,

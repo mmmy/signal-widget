@@ -14,7 +14,7 @@ use crate::core::contract::{AdapterId, AppEvent, UiAction};
 use crate::core::queries::unread::{collect_new_unread_keys, effective_unread_keys};
 use crate::core::runtime::{Runtime, RuntimeHandle};
 use crate::domain::{compare_period_desc, period_to_millis, Side, SignalKey};
-use crate::poller::{PollerEvent, PollerHandle};
+use crate::poller::PollerHandle;
 use crate::unread_panel::{build_unread_items, HoverPanelState, HoverPanelTarget};
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -48,7 +48,7 @@ enum ViewportClosePlan {
 pub struct SignalDeskApp {
     config: AppConfig,
     config_path: PathBuf,
-    poller: PollerHandle,
+    _poller: PollerHandle,
     signals: HashMap<SignalKey, SignalState>,
     pending_read: HashSet<SignalKey>,
     local_read_floor_t: HashMap<SignalKey, i64>,
@@ -109,7 +109,7 @@ impl SignalDeskApp {
         Self {
             config,
             config_path,
-            poller,
+            _poller: poller,
             signals: HashMap::new(),
             pending_read: HashSet::new(),
             local_read_floor_t: HashMap::new(),
@@ -127,47 +127,6 @@ impl SignalDeskApp {
             runtime_handle,
             runtime_event_rx,
         }
-    }
-
-    fn drain_poller_events(&mut self) -> bool {
-        let mut had_events = false;
-        while let Ok(event) = self.poller.event_rx.try_recv() {
-            had_events = true;
-            match event {
-                PollerEvent::Snapshot {
-                    fetched_at_ms,
-                    page,
-                } => {
-                    self.consume_snapshot(fetched_at_ms, page);
-                    self.consecutive_poll_failures = 0;
-                    self.last_poll_ok = Some(true);
-                    self.last_error = None;
-                }
-                PollerEvent::PollFailed { error } => {
-                    self.consecutive_poll_failures =
-                        self.consecutive_poll_failures.saturating_add(1);
-                    self.last_poll_ok = Some(self.consecutive_poll_failures < 2);
-                    self.last_error = Some(error);
-                }
-                PollerEvent::SyncFailed { key, error } => {
-                    let was_pending = self.pending_read.remove(&key);
-                    self.local_read_floor_t.remove(&key);
-                    if was_pending {
-                        if let Some(state) = self.signals.get_mut(&key) {
-                            state.read = false;
-                        }
-                    }
-                    self.last_error = Some(format!(
-                        "sync failed [{} {} {}]: {}",
-                        key.symbol, key.period, key.signal_type, error
-                    ));
-                }
-                PollerEvent::MarkReadSynced { key } => {
-                    self.pending_read.remove(&key);
-                }
-            }
-        }
-        had_events
     }
 
     fn consume_snapshot(&mut self, fetched_at_ms: i64, page: SignalPage) {
@@ -562,6 +521,34 @@ impl SignalDeskApp {
         while let Ok(event) = self.runtime_event_rx.try_recv() {
             had_events = true;
             match event {
+                AppEvent::PollerSnapshot { fetched_at_ms, page } => {
+                    self.consume_snapshot(fetched_at_ms, page);
+                    self.consecutive_poll_failures = 0;
+                    self.last_poll_ok = Some(true);
+                    self.last_error = None;
+                }
+                AppEvent::PollFailed { error } => {
+                    self.consecutive_poll_failures =
+                        self.consecutive_poll_failures.saturating_add(1);
+                    self.last_poll_ok = Some(self.consecutive_poll_failures < 2);
+                    self.last_error = Some(error);
+                }
+                AppEvent::SyncFailed { key, error } => {
+                    let was_pending = self.pending_read.remove(&key);
+                    self.local_read_floor_t.remove(&key);
+                    if was_pending {
+                        if let Some(state) = self.signals.get_mut(&key) {
+                            state.read = false;
+                        }
+                    }
+                    self.last_error = Some(format!(
+                        "sync failed [{} {} {}]: {}",
+                        key.symbol, key.period, key.signal_type, error
+                    ));
+                }
+                AppEvent::MarkReadSynced { key } => {
+                    self.pending_read.remove(&key);
+                }
                 AppEvent::AdapterAction {
                     target: AdapterId::MainWindow,
                     action,
@@ -598,7 +585,6 @@ fn load_cjk_font_bytes() -> Option<(String, Vec<u8>)> {
 
 impl eframe::App for SignalDeskApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let had_events = self.drain_poller_events();
         self.apply_window_mode(ctx);
         if ctx.input(|i| i.viewport().close_requested()) {
             let _ = self
@@ -741,7 +727,7 @@ impl eframe::App for SignalDeskApp {
 
         if self.hover_panel.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
-        } else if had_events || had_runtime_events {
+        } else if had_runtime_events {
             ctx.request_repaint();
         }
     }

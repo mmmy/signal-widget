@@ -1,3 +1,4 @@
+use crate::api::SignalPage;
 use crate::config::UiConfig;
 use crate::domain::SignalKey;
 
@@ -35,6 +36,20 @@ pub enum UiAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppEvent {
     SnapshotUpdated(AppSnapshot),
+    PollerSnapshot {
+        fetched_at_ms: i64,
+        page: SignalPage,
+    },
+    PollFailed {
+        error: String,
+    },
+    MarkReadSynced {
+        key: SignalKey,
+    },
+    SyncFailed {
+        key: SignalKey,
+        error: String,
+    },
     AdapterAction { target: AdapterId, action: UiAction },
 }
 
