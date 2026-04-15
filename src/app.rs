@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use chrono::TimeZone;
 use eframe::egui::{self, Color32};
 use tracing::{info, warn};
 
@@ -10,6 +11,7 @@ use crate::api::{SignalPage, SignalState};
 use crate::config::{AppConfig, GroupConfig};
 use crate::domain::{compare_period_desc, period_to_millis, Side, SignalKey};
 use crate::poller::{PollerCommand, PollerEvent, PollerHandle};
+use crate::unread_panel::{build_unread_items, HoverPanelState, HoverPanelTarget};
 
 #[derive(Clone, Copy, Debug, Default)]
 struct BarCell {
@@ -23,6 +25,10 @@ pub struct SignalDeskApp {
     config_path: PathBuf,
     poller: PollerHandle,
     signals: HashMap<SignalKey, SignalState>,
+    pending_read: HashSet<SignalKey>,
+    local_read_floor_t: HashMap<SignalKey, i64>,
+    hover_panel: Option<HoverPanelState>,
+    hover_anchor: Option<egui::Rect>,
     last_poll_ms: Option<i64>,
     last_meta: Option<(u64, u32, u32)>,
     last_error: Option<String>,
@@ -64,6 +70,10 @@ impl SignalDeskApp {
             config_path,
             poller,
             signals: HashMap::new(),
+            pending_read: HashSet::new(),
+            local_read_floor_t: HashMap::new(),
+            hover_panel: None,
+            hover_anchor: None,
             last_poll_ms: None,
             last_meta: None,
             last_error: None,
@@ -81,10 +91,17 @@ impl SignalDeskApp {
                     self.last_error = Some(error);
                 }
                 PollerEvent::SyncFailed { key, error } => {
-                    if let Some(state) = self.signals.get_mut(&key) {
-                        state.read = false;
+                    let was_pending = self.pending_read.remove(&key);
+                    self.local_read_floor_t.remove(&key);
+                    if was_pending {
+                        if let Some(state) = self.signals.get_mut(&key) {
+                            state.read = false;
+                        }
                     }
                     self.last_error = Some(format!("sync failed [{} {} {}]: {}", key.symbol, key.period, key.signal_type, error));
+                }
+                PollerEvent::MarkReadSynced { key } => {
+                    self.pending_read.remove(&key);
                 }
             }
         }
@@ -95,7 +112,15 @@ impl SignalDeskApp {
         for row in &page.data {
             for (signal_type, state) in &row.signals {
                 let key = SignalKey::new(row.symbol.clone(), row.period.clone(), signal_type.clone());
-                next.insert(key, state.clone());
+                let mut next_state = state.clone();
+                if let Some(&floor_t) = self.local_read_floor_t.get(&key) {
+                    if next_state.t <= floor_t {
+                        next_state.read = true;
+                    } else {
+                        self.local_read_floor_t.remove(&key);
+                    }
+                }
+                next.insert(key, next_state);
             }
         }
         self.signals = next;
@@ -136,31 +161,67 @@ impl SignalDeskApp {
             .flat_map(|period| group.signal_types.iter().map(move |signal_type| (period, signal_type)))
             .filter_map(|(period, signal_type)| {
                 let key = SignalKey::new(group.symbol.clone(), period.clone(), signal_type.clone());
-                self.signals.get(&key)
+                self.signals.get(&key).map(|sig| (key, sig))
             })
-            .filter(|sig| !sig.read)
+            .filter(|(key, sig)| !sig.read && !self.pending_read.contains(key))
             .count()
+    }
+
+    fn total_unread_count(&self) -> usize {
+        build_unread_items(
+            &self.config.groups,
+            &self.signals,
+            &self.pending_read,
+            &HoverPanelTarget::Global,
+        )
+        .len()
     }
 
     fn mark_group_read(&mut self, group: &GroupConfig) {
         for period in &group.periods {
             for signal_type in &group.signal_types {
                 let key = SignalKey::new(group.symbol.clone(), period.clone(), signal_type.clone());
-                let Some(signal) = self.signals.get_mut(&key) else {
+                let Some(is_unread) = self.signals.get(&key).map(|signal| !signal.read) else {
                     continue;
                 };
-                if signal.read {
+                if !is_unread {
                     continue;
                 }
-                signal.read = true;
-                if let Err(err) = self
-                    .poller
-                    .command_tx
-                    .send(PollerCommand::MarkRead { key: key.clone(), read: true })
-                {
-                    warn!("send mark-read command failed: {}", err);
-                }
+                self.mark_one_read(key);
             }
+        }
+    }
+
+    fn mark_one_read(&mut self, key: SignalKey) {
+        if self.pending_read.contains(&key) {
+            return;
+        }
+
+        if let Some(signal_t) = self.signals.get(&key).map(|signal| signal.t) {
+            self.local_read_floor_t.insert(key.clone(), signal_t);
+        }
+        if let Some(signal) = self.signals.get_mut(&key) {
+            signal.read = true;
+        }
+        self.pending_read.insert(key.clone());
+
+        if let Err(err) = self
+            .poller
+            .command_tx
+            .send(PollerCommand::MarkRead { key: key.clone(), read: true })
+        {
+            self.pending_read.remove(&key);
+            self.local_read_floor_t.remove(&key);
+            if let Some(signal) = self.signals.get_mut(&key) {
+                signal.read = false;
+            }
+
+            let message = format!(
+                "send mark-read failed [{} {} {}]: {}",
+                key.symbol, key.period, key.signal_type, err
+            );
+            warn!("{}", message);
+            self.last_error = Some(message);
         }
     }
 
@@ -184,7 +245,7 @@ impl SignalDeskApp {
 
             let idx = 59 - slot as usize;
             let next_side = Side::from_code(signal.sd);
-            let unread = !signal.read;
+            let unread = !signal.read && !self.pending_read.contains(&key);
             merge_bar_cell(&mut bars[idx], next_side, unread);
         }
         bars
@@ -201,18 +262,27 @@ impl SignalDeskApp {
         });
     }
 
-    fn render_group_card(&mut self, ui: &mut egui::Ui, group: &GroupConfig) {
+    fn render_group_card(&mut self, ui: &mut egui::Ui, group: &GroupConfig) -> bool {
         let unread = self.group_unread_count(group);
+        let mut unread_trigger_hovered = false;
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(&group.symbol);
                 ui.label(egui::RichText::new(&group.name).small().color(Color32::LIGHT_GRAY));
                 if unread > 0 {
-                    ui.label(
+                    let unread_badge = ui.label(
                         egui::RichText::new(format!("{unread} unread"))
                             .color(Color32::BLACK)
                             .background_color(Color32::from_rgb(245, 173, 0)),
                     );
+                    if unread_badge.hovered() {
+                        unread_trigger_hovered = true;
+                        self.hover_panel = Some(HoverPanelState {
+                            target: HoverPanelTarget::Group(group.id.clone()),
+                            close_deadline_ms: None,
+                        });
+                        self.hover_anchor = Some(unread_badge.rect);
+                    }
                 }
                 if ui.small_button("全部已读").clicked() {
                     self.mark_group_read(group);
@@ -233,6 +303,143 @@ impl SignalDeskApp {
                 self.render_period_row(ui, group, &period);
             }
         });
+        unread_trigger_hovered
+    }
+
+    fn render_unread_popover(&mut self, ctx: &egui::Context) -> bool {
+        let Some(panel) = self.hover_panel.clone() else {
+            return false;
+        };
+        let Some(anchor) = self.hover_anchor else {
+            return false;
+        };
+        let viewport = ctx.input(|i| i.screen_rect());
+        let margin = 8.0_f32;
+        let max_width = (viewport.width() - margin * 2.0).max(1.0);
+        let desired_width = if self.config.ui.edge_mode {
+            (self.config.ui.edge_width - 16.0).max(1.0)
+        } else {
+            420.0
+        };
+        let popover_width = desired_width.clamp(1.0, max_width);
+        // Switch to compact layout when wide row columns + button can no longer fit safely.
+        let wide_columns_width = 96.0 + 44.0 + 88.0 + 32.0 + 112.0;
+        let wide_button_width = 92.0;
+        let wide_spacing_width = 48.0;
+        let wide_layout_min_width = wide_columns_width + wide_button_width + wide_spacing_width;
+        let compact_layout = popover_width < wide_layout_min_width;
+        let estimated_popover_height = 380.0_f32;
+        let preferred_pos = anchor.left_bottom() + egui::vec2(0.0, 6.0);
+        let min_x = viewport.left() + margin;
+        let max_x = (viewport.right() - margin - popover_width).max(min_x);
+        let min_y = viewport.top() + margin;
+        let max_y = (viewport.bottom() - margin - estimated_popover_height).max(min_y);
+        let popover_pos = egui::pos2(
+            preferred_pos.x.clamp(min_x, max_x),
+            preferred_pos.y.clamp(min_y, max_y),
+        );
+
+        let rows = build_unread_items(
+            &self.config.groups,
+            &self.signals,
+            &self.pending_read,
+            &panel.target,
+        );
+        let title = match &panel.target {
+            HoverPanelTarget::Global => "全部未读警报",
+            HoverPanelTarget::Group(_) => "分组未读警报",
+        };
+
+        let mut clicked_key = None;
+        let popover = egui::Area::new(egui::Id::new("unread_hover_popover"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(popover_pos)
+            .interactable(true)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style())
+                    .show(ui, |ui| {
+                        ui.set_min_width(popover_width);
+                        ui.set_max_width(popover_width);
+                        ui.vertical(|ui| {
+                            ui.label(egui::RichText::new(title).strong());
+                            ui.separator();
+
+                            egui::ScrollArea::vertical()
+                                .max_height(320.0)
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    if rows.is_empty() {
+                                        ui.label("暂无未读信号");
+                                        return;
+                                    }
+
+                                    for row in &rows {
+                                        let time_text = format_trigger_time_local(row.trigger_time_ms);
+                                        if compact_layout {
+                                            ui.vertical(|ui| {
+                                                ui.horizontal_wrapped(|ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(&row.symbol).monospace(),
+                                                    );
+                                                    ui.label(
+                                                        egui::RichText::new(&row.period).monospace(),
+                                                    );
+                                                    ui.label(&row.signal_type);
+                                                    ui.label(side_rich_text(row.side));
+                                                });
+                                                ui.label(egui::RichText::new(time_text.as_str()).monospace());
+                                                if ui.button("标记已读").clicked() {
+                                                    clicked_key = Some(row.key.clone());
+                                                }
+                                            });
+                                        } else {
+                                            ui.horizontal(|ui| {
+                                                ui.add_sized(
+                                                    [96.0, 18.0],
+                                                    egui::Label::new(
+                                                        egui::RichText::new(&row.symbol).monospace(),
+                                                    ),
+                                                );
+                                                ui.add_sized(
+                                                    [44.0, 18.0],
+                                                    egui::Label::new(
+                                                        egui::RichText::new(&row.period).monospace(),
+                                                    ),
+                                                );
+                                                ui.add_sized(
+                                                    [88.0, 18.0],
+                                                    egui::Label::new(&row.signal_type),
+                                                );
+                                                ui.add_sized(
+                                                    [32.0, 18.0],
+                                                    egui::Label::new(side_rich_text(row.side)),
+                                                );
+                                                ui.add_sized(
+                                                    [112.0, 18.0],
+                                                    egui::Label::new(
+                                                        egui::RichText::new(time_text.as_str())
+                                                            .monospace(),
+                                                    ),
+                                                );
+                                                if ui.button("标记已读").clicked() {
+                                                    clicked_key = Some(row.key.clone());
+                                                }
+                                            });
+                                        }
+                                        ui.separator();
+                                    }
+                                });
+                        });
+                    })
+                    .response
+                    .hovered()
+            });
+
+        if let Some(key) = clicked_key {
+            self.mark_one_read(key);
+        }
+
+        popover.inner || popover.response.hovered()
     }
 }
 
@@ -263,6 +470,8 @@ impl eframe::App for SignalDeskApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_poller_events();
         self.apply_window_mode(ctx);
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut trigger_hovered = false;
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -286,6 +495,21 @@ impl eframe::App for SignalDeskApp {
                 ui.checkbox(&mut self.config.ui.notifications, "通知");
                 ui.checkbox(&mut self.config.ui.sound, "声音");
 
+                let total_unread = self.total_unread_count();
+                let total_badge = ui.label(
+                    egui::RichText::new(format!("Total unread: {total_unread}"))
+                        .color(Color32::BLACK)
+                        .background_color(Color32::from_rgb(245, 173, 0)),
+                );
+                if total_badge.hovered() {
+                    trigger_hovered = true;
+                    self.hover_panel = Some(HoverPanelState {
+                        target: HoverPanelTarget::Global,
+                        close_deadline_ms: None,
+                    });
+                    self.hover_anchor = Some(total_badge.rect);
+                }
+
                 if edge_changed || top_changed || width_changed {
                     self.save_config();
                 }
@@ -303,11 +527,35 @@ impl eframe::App for SignalDeskApp {
                     if !group.enabled {
                         continue;
                     }
-                    self.render_group_card(ui, &group);
+                    trigger_hovered |= self.render_group_card(ui, &group);
                     ui.add_space(8.0);
                 }
             });
         });
+
+        let panel_hovered = self.render_unread_popover(ctx);
+        if let Some(panel) = self.hover_panel.as_mut() {
+            let next_deadline = crate::unread_panel::next_close_deadline_ms(
+                trigger_hovered,
+                panel_hovered,
+                now_ms,
+                panel.close_deadline_ms,
+                200,
+            );
+
+            if let Some(deadline) = next_deadline {
+                if now_ms >= deadline {
+                    self.hover_panel = None;
+                    self.hover_anchor = None;
+                } else {
+                    panel.close_deadline_ms = Some(deadline);
+                }
+            } else {
+                panel.close_deadline_ms = None;
+            }
+        } else {
+            self.hover_anchor = None;
+        }
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             let poll_text = match self.last_poll_ms {
@@ -330,7 +578,12 @@ impl eframe::App for SignalDeskApp {
             });
         });
 
-        ctx.request_repaint_after(Duration::from_millis(200));
+        let repaint_after = if self.hover_panel.is_some() {
+            Duration::from_millis(16)
+        } else {
+            Duration::from_millis(200)
+        };
+        ctx.request_repaint_after(repaint_after);
     }
 }
 
@@ -396,5 +649,20 @@ fn bar_color(cell: BarCell) -> Color32 {
             }
         }
         _ => Color32::from_rgb(60, 84, 95),
+    }
+}
+
+fn side_rich_text(side: Side) -> egui::RichText {
+    match side {
+        Side::Bull => egui::RichText::new("多").color(Color32::from_rgb(48, 181, 122)),
+        Side::Bear => egui::RichText::new("空").color(Color32::from_rgb(214, 84, 105)),
+        Side::Unknown => egui::RichText::new("未知").color(Color32::LIGHT_GRAY),
+    }
+}
+
+fn format_trigger_time_local(trigger_time_ms: i64) -> String {
+    match chrono::Local.timestamp_millis_opt(trigger_time_ms).single() {
+        Some(dt) => dt.format("%m-%d %H:%M:%S").to_string(),
+        None => "-".to_string(),
     }
 }

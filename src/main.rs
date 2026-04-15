@@ -3,6 +3,7 @@ mod app;
 mod config;
 mod domain;
 mod poller;
+mod unread_panel;
 
 use tracing::Level;
 
