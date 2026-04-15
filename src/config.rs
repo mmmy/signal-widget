@@ -23,7 +23,12 @@ impl Default for AppConfig {
                     id: "group-1".to_string(),
                     name: "BTC 主监控".to_string(),
                     symbol: "BTCUSDT".to_string(),
-                    periods: vec!["15".to_string(), "60".to_string(), "4D".to_string(), "W".to_string()],
+                    periods: vec![
+                        "15".to_string(),
+                        "60".to_string(),
+                        "4D".to_string(),
+                        "W".to_string(),
+                    ],
                     signal_types: vec!["vegas".to_string()],
                     enabled: true,
                 },
@@ -31,7 +36,12 @@ impl Default for AppConfig {
                     id: "group-2".to_string(),
                     name: "ETH 主监控".to_string(),
                     symbol: "ETHUSDT".to_string(),
-                    periods: vec!["15".to_string(), "60".to_string(), "4D".to_string(), "W".to_string()],
+                    periods: vec![
+                        "15".to_string(),
+                        "60".to_string(),
+                        "4D".to_string(),
+                        "W".to_string(),
+                    ],
                     signal_types: vec!["divMacd".to_string()],
                     enabled: true,
                 },
@@ -62,7 +72,8 @@ impl AppConfig {
                 .with_context(|| format!("failed to create config dir: {}", parent.display()))?;
         }
         let yaml = serde_yaml::to_string(self).context("failed to serialize config into yaml")?;
-        fs::write(path, yaml).with_context(|| format!("failed to write config file: {}", path.display()))?;
+        fs::write(path, yaml)
+            .with_context(|| format!("failed to write config file: {}", path.display()))?;
         Ok(())
     }
 }

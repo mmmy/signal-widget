@@ -19,10 +19,20 @@ pub enum PollerCommand {
 
 #[derive(Debug, Clone)]
 pub enum PollerEvent {
-    Snapshot { fetched_at_ms: i64, page: SignalPage },
-    PollFailed { error: String },
-    MarkReadSynced { key: SignalKey },
-    SyncFailed { key: SignalKey, error: String },
+    Snapshot {
+        fetched_at_ms: i64,
+        page: SignalPage,
+    },
+    PollFailed {
+        error: String,
+    },
+    MarkReadSynced {
+        key: SignalKey,
+    },
+    SyncFailed {
+        key: SignalKey,
+        error: String,
+    },
 }
 
 pub struct PollerHandle {
@@ -133,8 +143,16 @@ fn build_request(config: &AppConfig) -> Option<FetchSignalsRequest> {
 
     Some(FetchSignalsRequest {
         symbols,
-        periods: if periods.is_empty() { None } else { Some(periods) },
-        signal_types: if signal_types.is_empty() { None } else { Some(signal_types) },
+        periods: if periods.is_empty() {
+            None
+        } else {
+            Some(periods)
+        },
+        signal_types: if signal_types.is_empty() {
+            None
+        } else {
+            Some(signal_types)
+        },
         page: Some(1),
         page_size: Some(config.poll.page_size.min(100)),
     })

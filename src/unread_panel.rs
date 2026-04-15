@@ -245,8 +245,12 @@ mod tests {
             },
         );
 
-        let global_rows =
-            build_unread_items(&groups, &signals, &HashSet::new(), &HoverPanelTarget::Global);
+        let global_rows = build_unread_items(
+            &groups,
+            &signals,
+            &HashSet::new(),
+            &HoverPanelTarget::Global,
+        );
         assert_eq!(global_rows.len(), 1);
         assert_eq!(global_rows[0].key, key);
 

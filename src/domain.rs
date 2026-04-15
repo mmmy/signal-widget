@@ -25,7 +25,11 @@ pub struct SignalKey {
 }
 
 impl SignalKey {
-    pub fn new(symbol: impl Into<String>, period: impl Into<String>, signal_type: impl Into<String>) -> Self {
+    pub fn new(
+        symbol: impl Into<String>,
+        period: impl Into<String>,
+        signal_type: impl Into<String>,
+    ) -> Self {
         Self {
             symbol: symbol.into(),
             period: period.into(),
@@ -42,13 +46,21 @@ pub fn period_to_millis(period: &str) -> Option<i64> {
 
     if normalized.ends_with('W') {
         let num = normalized.trim_end_matches('W');
-        let weeks = if num.is_empty() { 1 } else { num.parse::<i64>().ok()? };
+        let weeks = if num.is_empty() {
+            1
+        } else {
+            num.parse::<i64>().ok()?
+        };
         return Some(weeks * 7 * 24 * 60 * 60 * 1000);
     }
 
     if normalized.ends_with('D') {
         let num = normalized.trim_end_matches('D');
-        let days = if num.is_empty() { 1 } else { num.parse::<i64>().ok()? };
+        let days = if num.is_empty() {
+            1
+        } else {
+            num.parse::<i64>().ok()?
+        };
         return Some(days * 24 * 60 * 60 * 1000);
     }
 

@@ -20,6 +20,13 @@ struct BarCell {
     unread: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PeriodLabelVisual {
+    text: String,
+    color: Option<Color32>,
+    strong: bool,
+}
+
 pub struct SignalDeskApp {
     config: AppConfig,
     config_path: PathBuf,
@@ -83,7 +90,10 @@ impl SignalDeskApp {
     fn drain_poller_events(&mut self) {
         while let Ok(event) = self.poller.event_rx.try_recv() {
             match event {
-                PollerEvent::Snapshot { fetched_at_ms, page } => {
+                PollerEvent::Snapshot {
+                    fetched_at_ms,
+                    page,
+                } => {
                     self.consume_snapshot(fetched_at_ms, page);
                     self.last_error = None;
                 }
@@ -98,7 +108,10 @@ impl SignalDeskApp {
                             state.read = false;
                         }
                     }
-                    self.last_error = Some(format!("sync failed [{} {} {}]: {}", key.symbol, key.period, key.signal_type, error));
+                    self.last_error = Some(format!(
+                        "sync failed [{} {} {}]: {}",
+                        key.symbol, key.period, key.signal_type, error
+                    ));
                 }
                 PollerEvent::MarkReadSynced { key } => {
                     self.pending_read.remove(&key);
@@ -111,7 +124,8 @@ impl SignalDeskApp {
         let mut next = HashMap::new();
         for row in &page.data {
             for (signal_type, state) in &row.signals {
-                let key = SignalKey::new(row.symbol.clone(), row.period.clone(), signal_type.clone());
+                let key =
+                    SignalKey::new(row.symbol.clone(), row.period.clone(), signal_type.clone());
                 let mut next_state = state.clone();
                 if let Some(&floor_t) = self.local_read_floor_t.get(&key) {
                     if next_state.t <= floor_t {
@@ -158,7 +172,12 @@ impl SignalDeskApp {
         group
             .periods
             .iter()
-            .flat_map(|period| group.signal_types.iter().map(move |signal_type| (period, signal_type)))
+            .flat_map(|period| {
+                group
+                    .signal_types
+                    .iter()
+                    .map(move |signal_type| (period, signal_type))
+            })
             .filter_map(|(period, signal_type)| {
                 let key = SignalKey::new(group.symbol.clone(), period.clone(), signal_type.clone());
                 self.signals.get(&key).map(|sig| (key, sig))
@@ -205,11 +224,10 @@ impl SignalDeskApp {
         }
         self.pending_read.insert(key.clone());
 
-        if let Err(err) = self
-            .poller
-            .command_tx
-            .send(PollerCommand::MarkRead { key: key.clone(), read: true })
-        {
+        if let Err(err) = self.poller.command_tx.send(PollerCommand::MarkRead {
+            key: key.clone(),
+            read: true,
+        }) {
             self.pending_read.remove(&key);
             self.local_read_floor_t.remove(&key);
             if let Some(signal) = self.signals.get_mut(&key) {
@@ -233,7 +251,11 @@ impl SignalDeskApp {
         let now_ms = chrono::Utc::now().timestamp_millis();
 
         for signal_type in &group.signal_types {
-            let key = SignalKey::new(group.symbol.clone(), period.to_string(), signal_type.clone());
+            let key = SignalKey::new(
+                group.symbol.clone(),
+                period.to_string(),
+                signal_type.clone(),
+            );
             let Some(signal) = self.signals.get(&key) else {
                 continue;
             };
@@ -252,12 +274,19 @@ impl SignalDeskApp {
     }
 
     fn render_period_row(&mut self, ui: &mut egui::Ui, group: &GroupConfig, period: &str) {
+        let bars = self.build_bars(group, period);
+        let has_unread = period_has_unread(&self.signals, &self.pending_read, group, period);
+        let visual = period_label_visual(period, has_unread);
+        let mut level_text = egui::RichText::new(visual.text).size(11.0).monospace();
+        if let Some(color) = visual.color {
+            level_text = level_text.color(color);
+        }
+        if visual.strong {
+            level_text = level_text.strong();
+        }
+
         ui.horizontal(|ui| {
-            ui.add_sized(
-                [21.0, 14.0],
-                egui::Label::new(egui::RichText::new(period).size(11.0).monospace()),
-            );
-            let bars = self.build_bars(group, period);
+            ui.add_sized([28.0, 14.0], egui::Label::new(level_text));
             paint_60_bar_line(ui, &bars);
         });
     }
@@ -268,7 +297,11 @@ impl SignalDeskApp {
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(&group.symbol);
-                ui.label(egui::RichText::new(&group.name).small().color(Color32::LIGHT_GRAY));
+                ui.label(
+                    egui::RichText::new(&group.name)
+                        .small()
+                        .color(Color32::LIGHT_GRAY),
+                );
                 if unread > 0 {
                     let unread_badge = ui.label(
                         egui::RichText::new(format!("{unread} unread"))
@@ -374,20 +407,26 @@ impl SignalDeskApp {
                                     }
 
                                     for row in &rows {
-                                        let time_text = format_trigger_time_local(row.trigger_time_ms);
+                                        let time_text =
+                                            format_trigger_time_local(row.trigger_time_ms);
                                         if compact_layout {
                                             ui.vertical(|ui| {
                                                 ui.horizontal_wrapped(|ui| {
                                                     ui.label(
-                                                        egui::RichText::new(&row.symbol).monospace(),
+                                                        egui::RichText::new(&row.symbol)
+                                                            .monospace(),
                                                     );
                                                     ui.label(
-                                                        egui::RichText::new(&row.period).monospace(),
+                                                        egui::RichText::new(&row.period)
+                                                            .monospace(),
                                                     );
                                                     ui.label(&row.signal_type);
                                                     ui.label(side_rich_text(row.side));
                                                 });
-                                                ui.label(egui::RichText::new(time_text.as_str()).monospace());
+                                                ui.label(
+                                                    egui::RichText::new(time_text.as_str())
+                                                        .monospace(),
+                                                );
                                                 if ui.button("标记已读").clicked() {
                                                     clicked_key = Some(row.key.clone());
                                                 }
@@ -397,13 +436,15 @@ impl SignalDeskApp {
                                                 ui.add_sized(
                                                     [96.0, 18.0],
                                                     egui::Label::new(
-                                                        egui::RichText::new(&row.symbol).monospace(),
+                                                        egui::RichText::new(&row.symbol)
+                                                            .monospace(),
                                                     ),
                                                 );
                                                 ui.add_sized(
                                                     [44.0, 18.0],
                                                     egui::Label::new(
-                                                        egui::RichText::new(&row.period).monospace(),
+                                                        egui::RichText::new(&row.period)
+                                                            .monospace(),
                                                     ),
                                                 );
                                                 ui.add_sized(
@@ -482,8 +523,12 @@ impl eframe::App for SignalDeskApp {
                     self.save_config();
                 }
 
-                let edge_changed = ui.checkbox(&mut self.config.ui.edge_mode, "贴边模式").changed();
-                let top_changed = ui.checkbox(&mut self.config.ui.always_on_top, "窗口置顶").changed();
+                let edge_changed = ui
+                    .checkbox(&mut self.config.ui.edge_mode, "贴边模式")
+                    .changed();
+                let top_changed = ui
+                    .checkbox(&mut self.config.ui.always_on_top, "窗口置顶")
+                    .changed();
                 let width_changed = ui
                     .add(
                         egui::DragValue::new(&mut self.config.ui.edge_width)
@@ -564,7 +609,9 @@ impl eframe::App for SignalDeskApp {
             };
             let meta = self
                 .last_meta
-                .map(|(total, page, page_size)| format!("total={total}, page={page}, pageSize={page_size}"))
+                .map(|(total, page, page_size)| {
+                    format!("total={total}, page={page}, pageSize={page_size}")
+                })
                 .unwrap_or_else(|| "total=0".to_string());
 
             ui.horizontal(|ui| {
@@ -612,7 +659,10 @@ fn paint_60_bar_line(ui: &mut egui::Ui, cells: &[BarCell; 60]) {
 
     for (idx, cell) in cells.iter().enumerate() {
         let x = rect.left() + idx as f32 * (bar_width + gap);
-        let slot = egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(bar_width, rect.height()));
+        let slot = egui::Rect::from_min_size(
+            egui::pos2(x, rect.top()),
+            egui::vec2(bar_width, rect.height()),
+        );
         painter.rect_filled(slot, 1.0, Color32::from_rgb(236, 239, 242));
 
         if cell.side.is_some() || cell.mixed {
@@ -664,5 +714,114 @@ fn format_trigger_time_local(trigger_time_ms: i64) -> String {
     match chrono::Local.timestamp_millis_opt(trigger_time_ms).single() {
         Some(dt) => dt.format("%m-%d %H:%M:%S").to_string(),
         None => "-".to_string(),
+    }
+}
+
+fn period_label_visual(period: &str, has_unread: bool) -> PeriodLabelVisual {
+    if has_unread {
+        PeriodLabelVisual {
+            text: format!("•{period}"),
+            color: Some(Color32::from_rgb(245, 173, 0)),
+            strong: true,
+        }
+    } else {
+        PeriodLabelVisual {
+            text: period.to_string(),
+            color: None,
+            strong: false,
+        }
+    }
+}
+
+fn period_has_unread(
+    signals: &HashMap<SignalKey, SignalState>,
+    pending_read: &HashSet<SignalKey>,
+    group: &GroupConfig,
+    period: &str,
+) -> bool {
+    group.signal_types.iter().any(|signal_type| {
+        let key = SignalKey::new(
+            group.symbol.clone(),
+            period.to_string(),
+            signal_type.clone(),
+        );
+        signals
+            .get(&key)
+            .is_some_and(|signal| !signal.read && !pending_read.contains(&key))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::GroupConfig;
+    use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn period_label_visual_marks_unread_level() {
+        let visual = period_label_visual("15", true);
+        assert_eq!(visual.text, "•15");
+        assert_eq!(visual.color, Some(Color32::from_rgb(245, 173, 0)));
+        assert!(visual.strong);
+    }
+
+    #[test]
+    fn period_label_visual_keeps_default_for_read_level() {
+        let visual = period_label_visual("15", false);
+        assert_eq!(visual.text, "15");
+        assert_eq!(visual.color, None);
+        assert!(!visual.strong);
+    }
+
+    #[test]
+    fn period_has_unread_uses_signal_state_not_bar_window() {
+        let group = GroupConfig {
+            id: "g1".to_string(),
+            name: "BTC".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            periods: vec!["15".to_string()],
+            signal_types: vec!["vegas".to_string()],
+            enabled: true,
+        };
+        let key = SignalKey::new("BTCUSDT", "15", "vegas");
+        let mut signals = HashMap::new();
+        signals.insert(
+            key.clone(),
+            SignalState {
+                sd: 1,
+                t: 1,
+                read: false,
+            },
+        );
+
+        let has_unread = period_has_unread(&signals, &HashSet::new(), &group, "15");
+        assert!(has_unread);
+    }
+
+    #[test]
+    fn period_has_unread_ignores_pending_read_signals() {
+        let group = GroupConfig {
+            id: "g1".to_string(),
+            name: "BTC".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            periods: vec!["15".to_string()],
+            signal_types: vec!["vegas".to_string()],
+            enabled: true,
+        };
+        let key = SignalKey::new("BTCUSDT", "15", "vegas");
+        let mut signals = HashMap::new();
+        signals.insert(
+            key.clone(),
+            SignalState {
+                sd: -1,
+                t: 1,
+                read: false,
+            },
+        );
+        let mut pending = HashSet::new();
+        pending.insert(key);
+
+        let has_unread = period_has_unread(&signals, &pending, &group, "15");
+        assert!(!has_unread);
     }
 }

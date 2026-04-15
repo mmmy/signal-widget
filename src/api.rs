@@ -38,7 +38,10 @@ impl ApiClient {
     }
 
     pub async fn mark_read(&self, key: &SignalKey, read: bool) -> Result<bool> {
-        let url = format!("{}/api/open/watch-list/symbol-alert/read-status", self.base_url);
+        let url = format!(
+            "{}/api/open/watch-list/symbol-alert/read-status",
+            self.base_url
+        );
         let body = ReadStatusRequest {
             symbol: key.symbol.clone(),
             period: key.period.clone(),
@@ -66,7 +69,10 @@ async fn decode_json<T: DeserializeOwned>(response: reqwest::Response) -> Result
         let body = response.text().await.unwrap_or_default();
         bail!("api error status {} body {}", status, body);
     }
-    response.json::<T>().await.context("failed to decode response json")
+    response
+        .json::<T>()
+        .await
+        .context("failed to decode response json")
 }
 
 #[derive(Debug, Clone, Serialize)]
