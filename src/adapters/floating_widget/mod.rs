@@ -11,7 +11,7 @@ pub fn force_poll_command() -> AppCommand {
 
 #[cfg(test)]
 mod tests {
-    use super::mark_read_command;
+    use super::{force_poll_command, mark_read_command};
     use crate::core::contract::AppCommand;
     use crate::domain::SignalKey;
 
@@ -20,5 +20,10 @@ mod tests {
         let key = SignalKey::new("BTCUSDT", "15", "vegas");
         let cmd = mark_read_command(key.clone());
         assert!(matches!(cmd, AppCommand::MarkRead { key: actual, read: true } if actual == key));
+    }
+
+    #[test]
+    fn force_poll_button_maps_to_force_poll_command() {
+        assert!(matches!(force_poll_command(), AppCommand::ForcePoll));
     }
 }
