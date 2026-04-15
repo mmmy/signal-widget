@@ -1,22 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod adapters;
-mod alerts;
-mod api;
-mod app;
-mod config;
-mod core;
-mod domain;
-mod poller;
-mod unread_panel;
-
 use tracing::Level;
 
-use crate::api::ApiClient;
-use crate::app::setup_chinese_fonts;
-use crate::app::SignalDeskApp;
-use crate::config::AppConfig;
-use crate::poller::PollerHandle;
+use signal_desk_egui::api::ApiClient;
+use signal_desk_egui::app::setup_chinese_fonts;
+use signal_desk_egui::app::SignalDeskApp;
+use signal_desk_egui::config::AppConfig;
+use signal_desk_egui::poller::PollerHandle;
 
 fn main() {
     init_tracing();
