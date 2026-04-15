@@ -1,5 +1,6 @@
 use crate::config::UiConfig;
 use crate::domain::SignalKey;
+use crate::protocol::AppSnapshot;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdapterId {
@@ -28,6 +29,7 @@ pub enum UiAction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppEvent {
+    SnapshotUpdated(AppSnapshot),
     AdapterAction { target: AdapterId, action: UiAction },
 }
 
