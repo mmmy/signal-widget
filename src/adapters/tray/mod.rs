@@ -28,6 +28,6 @@ mod tests {
             button_state: MouseButtonState::Up,
         };
         let mapped = map_tray_click_to_command(&event);
-        assert_eq!(mapped, Some(AppCommand::RequestShowMainWindow));
+        assert!(matches!(mapped, Some(AppCommand::RequestShowMainWindow)));
     }
 }
