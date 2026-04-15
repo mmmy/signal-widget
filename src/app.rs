@@ -889,6 +889,18 @@ mod tests {
     }
 
     #[test]
+    fn update_path_close_policy_resolves_to_close() {
+        let action = close_action_for_request(
+            true,
+            default_allow_close(),
+            default_tray_available(),
+        );
+        let plan = close_action_to_viewport_plan(action);
+
+        assert_eq!(plan, ViewportClosePlan::Close);
+    }
+
+    #[test]
     fn period_label_visual_marks_unread_level() {
         let visual = period_label_visual("15", true);
         assert_eq!(visual.text, "•15");

@@ -9,7 +9,8 @@ pub fn default_allow_close() -> bool {
 }
 
 pub fn default_tray_available() -> bool {
-    cfg!(target_os = "windows")
+    // Tray availability will be wired once the tray adapter is integrated later.
+    false
 }
 
 pub fn close_action_for_request(
