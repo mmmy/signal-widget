@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -7,8 +6,9 @@ use chrono::Utc;
 use egui::Context as EguiContext;
 use tracing::{debug, error};
 
-use crate::api::{ApiClient, FetchSignalsRequest, SignalPage};
-use crate::config::{AppConfig, GroupConfig};
+use crate::api::{ApiClient, SignalPage};
+use crate::config::AppConfig;
+use crate::core::services::poller_service::build_request;
 use crate::domain::SignalKey;
 
 #[derive(Debug, Clone)]
@@ -141,45 +141,6 @@ fn poll_once(
         repaint_ctx.request_repaint();
     }
     Ok(())
-}
-
-fn build_request(config: &AppConfig) -> Option<FetchSignalsRequest> {
-    let enabled: Vec<&GroupConfig> = config.groups.iter().filter(|g| g.enabled).collect();
-    if enabled.is_empty() {
-        return None;
-    }
-
-    let symbols = join_unique(enabled.iter().map(|g| g.symbol.clone()));
-    let periods = join_unique(enabled.iter().flat_map(|g| g.periods.clone()));
-    let signal_types = join_unique(enabled.iter().flat_map(|g| g.signal_types.clone()));
-
-    Some(FetchSignalsRequest {
-        symbols,
-        periods: if periods.is_empty() {
-            None
-        } else {
-            Some(periods)
-        },
-        signal_types: if signal_types.is_empty() {
-            None
-        } else {
-            Some(signal_types)
-        },
-        page: Some(1),
-        page_size: Some(config.poll.page_size.min(100)),
-    })
-}
-
-fn join_unique<I>(iter: I) -> String
-where
-    I: IntoIterator<Item = String>,
-{
-    let set: BTreeSet<String> = iter
-        .into_iter()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .collect();
-    set.into_iter().collect::<Vec<_>>().join(",")
 }
 
 fn emit_poll_err(event_tx: &mpsc::Sender<PollerEvent>, repaint_ctx: &EguiContext, error: String) {
