@@ -11,6 +11,7 @@ use crate::alerts::AlertEngine;
 use crate::api::{SignalPage, SignalState};
 use crate::config::{AppConfig, GroupConfig};
 use crate::core::queries::unread::{collect_new_unread_keys, effective_unread_keys};
+use crate::core::policy::window_lifecycle::{close_action_for_request, CloseAction};
 use crate::domain::{compare_period_desc, period_to_millis, Side, SignalKey};
 use crate::poller::{PollerCommand, PollerEvent, PollerHandle};
 use crate::unread_panel::{build_unread_items, HoverPanelState, HoverPanelTarget};
