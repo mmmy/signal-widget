@@ -568,7 +568,7 @@ impl eframe::App for SignalDeskApp {
         let had_events = self.drain_poller_events();
         self.apply_window_mode(ctx);
         let close_requested = ctx.input(|i| i.viewport().close_requested());
-        match app_close_action(close_requested, self.allow_close, self.tray_available) {
+        match close_action_for_request(close_requested, self.allow_close, self.tray_available) {
             Some(CloseAction::CloseApp) => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
@@ -845,14 +845,6 @@ fn period_has_unread(
     })
 }
 
-fn app_close_action(
-    close_requested: bool,
-    allow_close: bool,
-    tray_available: bool,
-) -> Option<CloseAction> {
-    close_action_for_request(close_requested, allow_close, tray_available)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -862,19 +854,19 @@ mod tests {
 
     #[test]
     fn app_close_action_returns_close_app_when_close_is_allowed() {
-        let action = app_close_action(true, true, false);
+        let action = close_action_for_request(true, true, false);
         assert_eq!(action, Some(CloseAction::CloseApp));
     }
 
     #[test]
     fn app_close_action_returns_minimize_to_tray_when_tray_is_available() {
-        let action = app_close_action(true, false, true);
+        let action = close_action_for_request(true, false, true);
         assert_eq!(action, Some(CloseAction::MinimizeToTray));
     }
 
     #[test]
     fn app_close_action_returns_none_when_close_not_requested() {
-        let action = app_close_action(false, false, true);
+        let action = close_action_for_request(false, false, true);
         assert_eq!(action, None);
     }
 
