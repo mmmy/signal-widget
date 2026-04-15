@@ -660,7 +660,11 @@ impl eframe::App for SignalDeskApp {
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             let poll_text = match self.last_poll_ms {
-                Some(ts) => format!("last poll: {}", format_trigger_time_local(ts)),
+                Some(ts) => format!(
+                    "last poll: {} ({})",
+                    format_trigger_time_local(ts),
+                    format_elapsed_since_local(ts, now_ms)
+                ),
                 None => "last poll: never".to_string(),
             };
             let meta = self
@@ -776,6 +780,16 @@ fn format_trigger_time_local(trigger_time_ms: i64) -> String {
     match chrono::Local.timestamp_millis_opt(trigger_time_ms).single() {
         Some(dt) => dt.format("%m-%d %H:%M:%S").to_string(),
         None => "-".to_string(),
+    }
+}
+
+fn format_elapsed_since_local(past_ms: i64, now_ms: i64) -> String {
+    let delta_ms = now_ms.saturating_sub(past_ms);
+    let minutes = delta_ms / 60_000;
+    if minutes <= 0 {
+        "刚刚".to_string()
+    } else {
+        format!("{minutes} 分钟前")
     }
 }
 
@@ -962,5 +976,17 @@ mod tests {
 
         let unread = effective_unread_keys(&signals, &pending);
         assert_eq!(unread, HashSet::from([key_unread]));
+    }
+
+    #[test]
+    fn format_elapsed_since_local_shows_just_now_for_sub_minute() {
+        let text = format_elapsed_since_local(100_000, 159_999);
+        assert_eq!(text, "刚刚");
+    }
+
+    #[test]
+    fn format_elapsed_since_local_shows_minutes() {
+        let text = format_elapsed_since_local(100_000, 280_000);
+        assert_eq!(text, "3 分钟前");
     }
 }
