@@ -45,7 +45,6 @@ impl RuntimeHandle {
 }
 
 pub struct Runtime {
-    pub state: AppState,
     command_tx: mpsc::Sender<RuntimeCommand>,
     join: Option<JoinHandle<()>>,
 }
@@ -80,7 +79,13 @@ impl Runtime {
 
                 match command_rx.recv_timeout(Duration::from_millis(50)) {
                     Ok(RuntimeCommand::App(app_command)) => {
-                        handle_app_command(app_command, tray_available, &event_tx, &poller_command_tx);
+                        handle_app_command(
+                            app_command,
+                            &mut state,
+                            tray_available,
+                            &event_tx,
+                            &poller_command_tx,
+                        );
                         repaint_ctx.request_repaint();
                     }
                     Ok(RuntimeCommand::SetTrayAvailable(available)) => {
@@ -95,7 +100,6 @@ impl Runtime {
 
         (
             Self {
-                state: AppState::default(),
                 command_tx,
                 join: Some(join),
             },
@@ -116,6 +120,7 @@ impl Drop for Runtime {
 
 fn handle_app_command(
     command: AppCommand,
+    state: &mut AppState,
     tray_available: bool,
     event_tx: &mpsc::Sender<AppEvent>,
     poller_command_tx: &mpsc::Sender<PollerCommand>,
@@ -125,6 +130,8 @@ fn handle_app_command(
             let _ = poller_command_tx.send(PollerCommand::ForcePoll);
         }
         AppCommand::MarkRead { key, read } => {
+            state.apply_mark_read_request(&key, read);
+            let _ = event_tx.send(AppEvent::SnapshotUpdated(state.to_snapshot()));
             let _ = poller_command_tx.send(PollerCommand::MarkRead { key, read });
         }
         AppCommand::RequestCloseMainWindow => {
@@ -166,37 +173,23 @@ fn handle_poller_event(
 ) {
     match event {
         PollerEvent::Snapshot { fetched_at_ms, page } => {
-            let signals = page
-                .data
-                .iter()
-                .flat_map(|row| {
-                    row.signals.iter().map(move |(signal_type, signal)| {
-                        (
-                            crate::domain::SignalKey::new(
-                                row.symbol.clone(),
-                                row.period.clone(),
-                                signal_type.clone(),
-                            ),
-                            signal.clone(),
-                        )
-                    })
-                })
-                .collect();
-            state.signals = signals;
-            state.last_poll_error = None;
+            state.apply_snapshot(fetched_at_ms, &page);
             let _ = event_tx.send(AppEvent::PollerSnapshot { fetched_at_ms, page });
             let _ = event_tx.send(AppEvent::SnapshotUpdated(state.to_snapshot()));
         }
         PollerEvent::PollFailed { error } => {
-            state.last_poll_error = Some(error.clone());
+            state.apply_poll_failed(error.clone());
             let _ = event_tx.send(AppEvent::SnapshotUpdated(state.to_snapshot()));
             let _ = event_tx.send(AppEvent::PollFailed { error });
         }
         PollerEvent::MarkReadSynced { key } => {
-            state.pending_read.remove(&key);
+            state.apply_mark_read_synced(&key);
+            let _ = event_tx.send(AppEvent::SnapshotUpdated(state.to_snapshot()));
             let _ = event_tx.send(AppEvent::MarkReadSynced { key });
         }
         PollerEvent::SyncFailed { key, error } => {
+            state.apply_sync_failed(&key, error.clone());
+            let _ = event_tx.send(AppEvent::SnapshotUpdated(state.to_snapshot()));
             let _ = event_tx.send(AppEvent::SyncFailed { key, error });
         }
     }
@@ -366,6 +359,7 @@ mod tests {
             &event_tx,
         );
 
+        let _snapshot_event = event_rx.recv().expect("snapshot event");
         let event = event_rx.recv().expect("runtime event");
         assert!(matches!(
             event,
