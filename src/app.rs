@@ -14,7 +14,7 @@ use crate::core::contract::{AdapterId, AppEvent, UiAction};
 use crate::core::queries::unread::{collect_new_unread_keys, effective_unread_keys};
 use crate::core::runtime::{Runtime, RuntimeHandle};
 use crate::domain::{compare_period_desc, period_to_millis, Side, SignalKey};
-use crate::poller::{PollerCommand, PollerEvent, PollerHandle};
+use crate::poller::{PollerEvent, PollerHandle};
 use crate::unread_panel::{build_unread_items, HoverPanelState, HoverPanelTarget};
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -105,7 +105,7 @@ impl SignalDeskApp {
         runtime_handle: RuntimeHandle,
         runtime_event_rx: std::sync::mpsc::Receiver<AppEvent>,
     ) -> Self {
-        let _ = poller.command_tx.send(PollerCommand::ForcePoll);
+        let _ = runtime_handle.send(crate::core::contract::AppCommand::ForcePoll);
         Self {
             config,
             config_path,
@@ -298,7 +298,7 @@ impl SignalDeskApp {
         }
         self.pending_read.insert(key.clone());
 
-        if let Err(err) = self.poller.command_tx.send(PollerCommand::MarkRead {
+        if let Err(err) = self.runtime_handle.send(crate::core::contract::AppCommand::MarkRead {
             key: key.clone(),
             read: true,
         }) {
@@ -616,7 +616,9 @@ impl eframe::App for SignalDeskApp {
                     .changed();
 
                 if ui.button("立即轮询").clicked() {
-                    let _ = self.poller.command_tx.send(PollerCommand::ForcePoll);
+                    let _ = self
+                        .runtime_handle
+                        .send(crate::core::contract::AppCommand::ForcePoll);
                 }
                 if ui.button("保存配置").clicked() {
                     self.save_config();

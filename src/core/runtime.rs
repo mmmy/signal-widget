@@ -7,6 +7,7 @@ use eframe::egui;
 use crate::core::contract::{AdapterId, AppCommand, AppEvent, UiAction};
 use crate::core::policy::window_lifecycle::close_action_for_request;
 use crate::core::state::AppState;
+use crate::poller::PollerCommand;
 
 enum RuntimeCommand {
     App(AppCommand),
@@ -49,7 +50,10 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    pub fn spawn(repaint_ctx: egui::Context) -> (Self, RuntimeHandle, mpsc::Receiver<AppEvent>) {
+    pub fn spawn(
+        repaint_ctx: egui::Context,
+        poller_command_tx: mpsc::Sender<PollerCommand>,
+    ) -> (Self, RuntimeHandle, mpsc::Receiver<AppEvent>) {
         let (command_tx, command_rx) = mpsc::channel::<RuntimeCommand>();
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>();
         let handle = RuntimeHandle::new(command_tx.clone(), event_tx.clone());
@@ -59,7 +63,12 @@ impl Runtime {
             while let Ok(command) = command_rx.recv() {
                 match command {
                     RuntimeCommand::App(app_command) => {
-                        handle_app_command(app_command, tray_available, &event_tx);
+                        handle_app_command(
+                            app_command,
+                            tray_available,
+                            &event_tx,
+                            &poller_command_tx,
+                        );
                         repaint_ctx.request_repaint();
                     }
                     RuntimeCommand::SetTrayAvailable(available) => {
@@ -95,8 +104,15 @@ fn handle_app_command(
     command: AppCommand,
     tray_available: bool,
     event_tx: &mpsc::Sender<AppEvent>,
+    poller_command_tx: &mpsc::Sender<PollerCommand>,
 ) {
     match command {
+        AppCommand::ForcePoll => {
+            let _ = poller_command_tx.send(PollerCommand::ForcePoll);
+        }
+        AppCommand::MarkRead { key, read } => {
+            let _ = poller_command_tx.send(PollerCommand::MarkRead { key, read });
+        }
         AppCommand::RequestCloseMainWindow => {
             if let Some(action) = close_action_for_request(true, false, tray_available) {
                 let ui_action = match action {
@@ -134,6 +150,8 @@ mod tests {
     use super::*;
     use std::sync::mpsc::Receiver;
 
+    use crate::domain::SignalKey;
+
     fn test_handle() -> (RuntimeHandle, Receiver<AppEvent>) {
         let (command_tx, command_rx) = mpsc::channel::<RuntimeCommand>();
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>();
@@ -158,8 +176,43 @@ mod tests {
     }
 
     #[test]
+    fn runtime_forwards_force_poll_to_poller() {
+        let (poller_tx, poller_rx) = mpsc::channel::<PollerCommand>();
+        let (_runtime, handle, _event_rx) = Runtime::spawn(egui::Context::default(), poller_tx);
+
+        handle.send(AppCommand::ForcePoll).expect("send command");
+
+        let command = poller_rx.recv().expect("poller command");
+        assert!(matches!(command, PollerCommand::ForcePoll));
+    }
+
+    #[test]
+    fn runtime_forwards_mark_read_to_poller() {
+        let (poller_tx, poller_rx) = mpsc::channel::<PollerCommand>();
+        let (_runtime, handle, _event_rx) = Runtime::spawn(egui::Context::default(), poller_tx);
+        let key = SignalKey::new("BTCUSDT", "15", "vegas");
+
+        handle
+            .send(AppCommand::MarkRead {
+                key: key.clone(),
+                read: true,
+            })
+            .expect("send command");
+
+        let command = poller_rx.recv().expect("poller command");
+        assert!(matches!(
+            command,
+            PollerCommand::MarkRead {
+                key: actual,
+                read: true
+            } if actual == key
+        ));
+    }
+
+    #[test]
     fn runtime_emits_show_main_window_action() {
-        let (_runtime, handle, event_rx) = Runtime::spawn(egui::Context::default());
+        let (poller_tx, _poller_rx) = mpsc::channel::<PollerCommand>();
+        let (_runtime, handle, event_rx) = Runtime::spawn(egui::Context::default(), poller_tx);
         handle
             .set_tray_available(true)
             .expect("set tray availability");
@@ -179,7 +232,8 @@ mod tests {
 
     #[test]
     fn runtime_emits_hide_to_tray_when_tray_is_available() {
-        let (_runtime, handle, event_rx) = Runtime::spawn(egui::Context::default());
+        let (poller_tx, _poller_rx) = mpsc::channel::<PollerCommand>();
+        let (_runtime, handle, event_rx) = Runtime::spawn(egui::Context::default(), poller_tx);
         handle
             .set_tray_available(true)
             .expect("set tray availability");
