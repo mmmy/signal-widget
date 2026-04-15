@@ -10,6 +10,9 @@ use tracing::{info, warn};
 use crate::alerts::AlertEngine;
 use crate::api::{SignalPage, SignalState};
 use crate::config::{AppConfig, GroupConfig};
+use crate::core::contract::{AdapterId, AppEvent, UiAction};
+use crate::core::queries::unread::{collect_new_unread_keys, effective_unread_keys};
+use crate::core::runtime::{Runtime, RuntimeHandle};
 use crate::domain::{compare_period_desc, period_to_millis, Side, SignalKey};
 use crate::poller::{PollerCommand, PollerEvent, PollerHandle};
 use crate::unread_panel::{build_unread_items, HoverPanelState, HoverPanelTarget};
@@ -35,6 +38,13 @@ struct WindowModeState {
     edge_width_bits: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewportClosePlan {
+    Show,
+    Close,
+    MinimizeToTray,
+}
+
 pub struct SignalDeskApp {
     config: AppConfig,
     config_path: PathBuf,
@@ -52,6 +62,10 @@ pub struct SignalDeskApp {
     consecutive_poll_failures: u32,
     last_meta: Option<(u64, u32, u32)>,
     last_error: Option<String>,
+    // Keep the runtime alive for the lifetime of the app.
+    _runtime: Runtime,
+    runtime_handle: RuntimeHandle,
+    runtime_event_rx: std::sync::mpsc::Receiver<AppEvent>,
 }
 
 pub fn setup_chinese_fonts(ctx: &egui::Context) {
@@ -83,7 +97,14 @@ pub fn setup_chinese_fonts(ctx: &egui::Context) {
 }
 
 impl SignalDeskApp {
-    pub fn new(config: AppConfig, config_path: PathBuf, poller: PollerHandle) -> Self {
+    pub fn new(
+        config: AppConfig,
+        config_path: PathBuf,
+        poller: PollerHandle,
+        runtime: Runtime,
+        runtime_handle: RuntimeHandle,
+        runtime_event_rx: std::sync::mpsc::Receiver<AppEvent>,
+    ) -> Self {
         let _ = poller.command_tx.send(PollerCommand::ForcePoll);
         Self {
             config,
@@ -102,6 +123,9 @@ impl SignalDeskApp {
             consecutive_poll_failures: 0,
             last_meta: None,
             last_error: None,
+            _runtime: runtime,
+            runtime_handle,
+            runtime_event_rx,
         }
     }
 
@@ -532,6 +556,21 @@ impl SignalDeskApp {
 
         popover.inner || popover.response.hovered()
     }
+
+    fn drain_runtime_events(&mut self, ctx: &egui::Context) -> bool {
+        let mut had_events = false;
+        while let Ok(event) = self.runtime_event_rx.try_recv() {
+            had_events = true;
+            match event {
+                AppEvent::AdapterAction {
+                    target: AdapterId::MainWindow,
+                    action,
+                } => apply_viewport_close_plan(ctx, action_to_viewport_plan(action)),
+                _ => {}
+            }
+        }
+        had_events
+    }
 }
 
 fn load_cjk_font_bytes() -> Option<(String, Vec<u8>)> {
@@ -561,6 +600,12 @@ impl eframe::App for SignalDeskApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let had_events = self.drain_poller_events();
         self.apply_window_mode(ctx);
+        if ctx.input(|i| i.viewport().close_requested()) {
+            let _ = self
+                .runtime_handle
+                .send(crate::core::contract::AppCommand::RequestCloseMainWindow);
+        }
+        let had_runtime_events = self.drain_runtime_events(ctx);
         let now_ms = chrono::Utc::now().timestamp_millis();
         let mut trigger_hovered = false;
 
@@ -694,7 +739,7 @@ impl eframe::App for SignalDeskApp {
 
         if self.hover_panel.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
-        } else if had_events {
+        } else if had_events || had_runtime_events {
             ctx.request_repaint();
         }
     }
@@ -823,43 +868,60 @@ fn period_has_unread(
         );
         signals
             .get(&key)
-            .is_some_and(|signal| !signal.read && !pending_read.contains(&key))
+        .is_some_and(|signal| !signal.read && !pending_read.contains(&key))
     })
 }
 
-fn effective_unread_keys(
-    signals: &HashMap<SignalKey, SignalState>,
-    pending_read: &HashSet<SignalKey>,
-) -> HashSet<SignalKey> {
-    signals
-        .iter()
-        .filter(|(key, state)| !state.read && !pending_read.contains(*key))
-        .map(|(key, _)| key.clone())
-        .collect()
+fn action_to_viewport_plan(action: UiAction) -> ViewportClosePlan {
+    match action {
+        UiAction::ShowMainWindow => ViewportClosePlan::Show,
+        UiAction::HideMainWindowToTray => ViewportClosePlan::MinimizeToTray,
+        UiAction::ExitProcess => ViewportClosePlan::Close,
+    }
 }
 
-fn collect_new_unread_keys(
-    previous_unread: &HashSet<SignalKey>,
-    current_unread: &HashSet<SignalKey>,
-) -> Vec<SignalKey> {
-    let mut keys: Vec<SignalKey> = current_unread
-        .difference(previous_unread)
-        .cloned()
-        .collect();
-    keys.sort_by(|a, b| {
-        a.symbol
-            .cmp(&b.symbol)
-            .then(a.period.cmp(&b.period))
-            .then(a.signal_type.cmp(&b.signal_type))
-    });
-    keys
+fn apply_viewport_close_plan(ctx: &egui::Context, plan: ViewportClosePlan) {
+    match plan {
+        ViewportClosePlan::Show => {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        ViewportClosePlan::Close => {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        ViewportClosePlan::MinimizeToTray => {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::GroupConfig;
+    use crate::core::queries::unread::collect_new_unread_keys;
     use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn action_to_viewport_plan_maps_close_app_to_close() {
+        let plan = action_to_viewport_plan(UiAction::ExitProcess);
+        assert_eq!(plan, ViewportClosePlan::Close);
+    }
+
+    #[test]
+    fn action_to_viewport_plan_maps_minimize_to_tray_to_minimize_plan() {
+        let plan = action_to_viewport_plan(UiAction::HideMainWindowToTray);
+        assert_eq!(plan, ViewportClosePlan::MinimizeToTray);
+    }
+
+    #[test]
+    fn action_to_viewport_plan_maps_show_to_show_plan() {
+        let plan = action_to_viewport_plan(UiAction::ShowMainWindow);
+        assert_eq!(plan, ViewportClosePlan::Show);
+    }
 
     #[test]
     fn period_label_visual_marks_unread_level() {
@@ -938,44 +1000,6 @@ mod tests {
 
         let keys = collect_new_unread_keys(&previous, &current);
         assert_eq!(keys, vec![new_key]);
-    }
-
-    #[test]
-    fn effective_unread_keys_filters_read_and_pending() {
-        let key_unread = SignalKey::new("BTCUSDT", "15", "vegas");
-        let key_read = SignalKey::new("ETHUSDT", "15", "vegas");
-        let key_pending = SignalKey::new("SOLUSDT", "15", "vegas");
-
-        let signals = HashMap::from([
-            (
-                key_unread.clone(),
-                SignalState {
-                    sd: 1,
-                    t: 100,
-                    read: false,
-                },
-            ),
-            (
-                key_read,
-                SignalState {
-                    sd: -1,
-                    t: 100,
-                    read: true,
-                },
-            ),
-            (
-                key_pending.clone(),
-                SignalState {
-                    sd: 1,
-                    t: 100,
-                    read: false,
-                },
-            ),
-        ]);
-        let pending = HashSet::from([key_pending]);
-
-        let unread = effective_unread_keys(&signals, &pending);
-        assert_eq!(unread, HashSet::from([key_unread]));
     }
 
     #[test]
