@@ -27,6 +27,13 @@ struct PeriodLabelVisual {
     strong: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WindowModeState {
+    always_on_top: bool,
+    edge_mode: bool,
+    edge_width_bits: u32,
+}
+
 pub struct SignalDeskApp {
     config: AppConfig,
     config_path: PathBuf,
@@ -36,6 +43,7 @@ pub struct SignalDeskApp {
     local_read_floor_t: HashMap<SignalKey, i64>,
     hover_panel: Option<HoverPanelState>,
     hover_anchor: Option<egui::Rect>,
+    last_window_mode: Option<WindowModeState>,
     last_poll_ms: Option<i64>,
     last_meta: Option<(u64, u32, u32)>,
     last_error: Option<String>,
@@ -81,14 +89,17 @@ impl SignalDeskApp {
             local_read_floor_t: HashMap::new(),
             hover_panel: None,
             hover_anchor: None,
+            last_window_mode: None,
             last_poll_ms: None,
             last_meta: None,
             last_error: None,
         }
     }
 
-    fn drain_poller_events(&mut self) {
+    fn drain_poller_events(&mut self) -> bool {
+        let mut had_events = false;
         while let Ok(event) = self.poller.event_rx.try_recv() {
+            had_events = true;
             match event {
                 PollerEvent::Snapshot {
                     fetched_at_ms,
@@ -118,6 +129,7 @@ impl SignalDeskApp {
                 }
             }
         }
+        had_events
     }
 
     fn consume_snapshot(&mut self, fetched_at_ms: i64, page: SignalPage) {
@@ -152,7 +164,16 @@ impl SignalDeskApp {
         }
     }
 
-    fn apply_window_mode(&self, ctx: &egui::Context) {
+    fn apply_window_mode(&mut self, ctx: &egui::Context) {
+        let state = WindowModeState {
+            always_on_top: self.config.ui.always_on_top,
+            edge_mode: self.config.ui.edge_mode,
+            edge_width_bits: self.config.ui.edge_width.clamp(120.0, 600.0).to_bits(),
+        };
+        if self.last_window_mode == Some(state) {
+            return;
+        }
+
         let level = if self.config.ui.always_on_top {
             egui::WindowLevel::AlwaysOnTop
         } else {
@@ -166,6 +187,7 @@ impl SignalDeskApp {
             [540.0, 760.0]
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size.into()));
+        self.last_window_mode = Some(state);
     }
 
     fn group_unread_count(&self, group: &GroupConfig) -> usize {
@@ -509,13 +531,30 @@ fn load_cjk_font_bytes() -> Option<(String, Vec<u8>)> {
 
 impl eframe::App for SignalDeskApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.drain_poller_events();
+        let had_events = self.drain_poller_events();
         self.apply_window_mode(ctx);
         let now_ms = chrono::Utc::now().timestamp_millis();
         let mut trigger_hovered = false;
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
+                let total_unread = self.total_unread_count();
+                let mut total_text = egui::RichText::new(format!("Total unread: {total_unread}"))
+                    .color(Color32::BLACK);
+                if total_unread > 0 {
+                    total_text = total_text.background_color(Color32::from_rgb(245, 173, 0));
+                }
+                let total_badge = ui.label(total_text);
+                if total_badge.hovered() {
+                    trigger_hovered = true;
+                    self.hover_panel = Some(HoverPanelState {
+                        target: HoverPanelTarget::Global,
+                        close_deadline_ms: None,
+                    });
+                    self.hover_anchor = Some(total_badge.rect);
+                }
+                ui.separator();
+
                 if ui.button("立即轮询").clicked() {
                     let _ = self.poller.command_tx.send(PollerCommand::ForcePoll);
                 }
@@ -539,21 +578,6 @@ impl eframe::App for SignalDeskApp {
                     .changed();
                 ui.checkbox(&mut self.config.ui.notifications, "通知");
                 ui.checkbox(&mut self.config.ui.sound, "声音");
-
-                let total_unread = self.total_unread_count();
-                let total_badge = ui.label(
-                    egui::RichText::new(format!("Total unread: {total_unread}"))
-                        .color(Color32::BLACK)
-                        .background_color(Color32::from_rgb(245, 173, 0)),
-                );
-                if total_badge.hovered() {
-                    trigger_hovered = true;
-                    self.hover_panel = Some(HoverPanelState {
-                        target: HoverPanelTarget::Global,
-                        close_deadline_ms: None,
-                    });
-                    self.hover_anchor = Some(total_badge.rect);
-                }
 
                 if edge_changed || top_changed || width_changed {
                     self.save_config();
@@ -625,12 +649,11 @@ impl eframe::App for SignalDeskApp {
             });
         });
 
-        let repaint_after = if self.hover_panel.is_some() {
-            Duration::from_millis(16)
-        } else {
-            Duration::from_millis(200)
-        };
-        ctx.request_repaint_after(repaint_after);
+        if self.hover_panel.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(16));
+        } else if had_events {
+            ctx.request_repaint();
+        }
     }
 }
 

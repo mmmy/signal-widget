@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod api;
 mod app;
 mod config;
@@ -24,9 +26,6 @@ fn main() {
         }
     };
     println!("using config: {}", config_path.display());
-    let api_client = ApiClient::new(&config.api);
-    let poller = PollerHandle::spawn(api_client, config.clone());
-
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Signal Desk")
@@ -40,6 +39,8 @@ fn main() {
         native_options,
         Box::new(move |cc| {
             setup_chinese_fonts(&cc.egui_ctx);
+            let api_client = ApiClient::new(&config.api);
+            let poller = PollerHandle::spawn(api_client, config.clone(), cc.egui_ctx.clone());
             Ok(Box::new(SignalDeskApp::new(config, config_path, poller)))
         }),
     );

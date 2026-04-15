@@ -4,6 +4,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use egui::Context as EguiContext;
 use tracing::{debug, error};
 
 use crate::api::{ApiClient, FetchSignalsRequest, SignalPage};
@@ -42,7 +43,7 @@ pub struct PollerHandle {
 }
 
 impl PollerHandle {
-    pub fn spawn(client: ApiClient, config: AppConfig) -> Self {
+    pub fn spawn(client: ApiClient, config: AppConfig, repaint_ctx: EguiContext) -> Self {
         let (command_tx, command_rx) = mpsc::channel::<PollerCommand>();
         let (event_tx, event_rx) = mpsc::channel::<PollerEvent>();
 
@@ -63,19 +64,26 @@ impl PollerHandle {
                 match command_rx.recv_timeout(wait_for) {
                     Ok(PollerCommand::Shutdown) => break,
                     Ok(PollerCommand::ForcePoll) => {
-                        if let Err(err) = poll_once(&runtime, &client, &config, &event_tx) {
-                            emit_poll_err(&event_tx, err.to_string());
+                        if let Err(err) =
+                            poll_once(&runtime, &client, &config, &event_tx, &repaint_ctx)
+                        {
+                            emit_poll_err(&event_tx, &repaint_ctx, err.to_string());
                         }
                         last_poll = Instant::now();
                     }
                     Ok(PollerCommand::MarkRead { key, read }) => {
                         let result = runtime.block_on(client.mark_read(&key, read));
                         match result {
-                            Ok(true) => emit_mark_read_synced(&event_tx, key),
-                            Ok(false) => {
-                                emit_sync_err(&event_tx, key, "server returned false".to_string())
+                            Ok(true) => emit_mark_read_synced(&event_tx, &repaint_ctx, key),
+                            Ok(false) => emit_sync_err(
+                                &event_tx,
+                                &repaint_ctx,
+                                key,
+                                "server returned false".to_string(),
+                            ),
+                            Err(err) => {
+                                emit_sync_err(&event_tx, &repaint_ctx, key, err.to_string())
                             }
-                            Err(err) => emit_sync_err(&event_tx, key, err.to_string()),
                         }
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -83,8 +91,9 @@ impl PollerHandle {
                 }
 
                 if last_poll.elapsed() >= poll_interval {
-                    if let Err(err) = poll_once(&runtime, &client, &config, &event_tx) {
-                        emit_poll_err(&event_tx, err.to_string());
+                    if let Err(err) = poll_once(&runtime, &client, &config, &event_tx, &repaint_ctx)
+                    {
+                        emit_poll_err(&event_tx, &repaint_ctx, err.to_string());
                     }
                     last_poll = Instant::now();
                 }
@@ -113,6 +122,7 @@ fn poll_once(
     client: &ApiClient,
     config: &AppConfig,
     event_tx: &mpsc::Sender<PollerEvent>,
+    repaint_ctx: &EguiContext,
 ) -> anyhow::Result<()> {
     let request = build_request(config);
     let Some(request) = request else {
@@ -127,6 +137,8 @@ fn poll_once(
     };
     if let Err(err) = event_tx.send(event) {
         error!("send snapshot event failed: {}", err);
+    } else {
+        repaint_ctx.request_repaint();
     }
     Ok(())
 }
@@ -170,23 +182,38 @@ where
     set.into_iter().collect::<Vec<_>>().join(",")
 }
 
-fn emit_poll_err(event_tx: &mpsc::Sender<PollerEvent>, error: String) {
+fn emit_poll_err(event_tx: &mpsc::Sender<PollerEvent>, repaint_ctx: &EguiContext, error: String) {
     let event = PollerEvent::PollFailed { error };
     if let Err(err) = event_tx.send(event) {
         tracing::error!("send poll failed event error: {}", err);
+    } else {
+        repaint_ctx.request_repaint();
     }
 }
 
-fn emit_sync_err(event_tx: &mpsc::Sender<PollerEvent>, key: SignalKey, error: String) {
+fn emit_sync_err(
+    event_tx: &mpsc::Sender<PollerEvent>,
+    repaint_ctx: &EguiContext,
+    key: SignalKey,
+    error: String,
+) {
     let event = PollerEvent::SyncFailed { key, error };
     if let Err(err) = event_tx.send(event) {
         tracing::error!("send sync failed event error: {}", err);
+    } else {
+        repaint_ctx.request_repaint();
     }
 }
 
-fn emit_mark_read_synced(event_tx: &mpsc::Sender<PollerEvent>, key: SignalKey) {
+fn emit_mark_read_synced(
+    event_tx: &mpsc::Sender<PollerEvent>,
+    repaint_ctx: &EguiContext,
+    key: SignalKey,
+) {
     let event = PollerEvent::MarkReadSynced { key };
     if let Err(err) = event_tx.send(event) {
         tracing::error!("send mark-read synced event error: {}", err);
+    } else {
+        repaint_ctx.request_repaint();
     }
 }
