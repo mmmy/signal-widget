@@ -10,10 +10,9 @@ use tracing::{info, warn};
 use crate::alerts::AlertEngine;
 use crate::api::{SignalPage, SignalState};
 use crate::config::{AppConfig, GroupConfig};
+use crate::core::contract::{AdapterId, AppEvent, UiAction};
 use crate::core::queries::unread::{collect_new_unread_keys, effective_unread_keys};
-use crate::core::policy::window_lifecycle::{
-    close_action_for_request, default_allow_close, default_tray_available, CloseAction,
-};
+use crate::core::runtime::{Runtime, RuntimeHandle};
 use crate::domain::{compare_period_desc, period_to_millis, Side, SignalKey};
 use crate::poller::{PollerCommand, PollerEvent, PollerHandle};
 use crate::unread_panel::{build_unread_items, HoverPanelState, HoverPanelTarget};
@@ -41,9 +40,9 @@ struct WindowModeState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ViewportClosePlan {
+    Show,
     Close,
     MinimizeToTray,
-    Noop,
 }
 
 pub struct SignalDeskApp {
@@ -63,6 +62,10 @@ pub struct SignalDeskApp {
     consecutive_poll_failures: u32,
     last_meta: Option<(u64, u32, u32)>,
     last_error: Option<String>,
+    // Keep the runtime alive for the lifetime of the app.
+    _runtime: Runtime,
+    runtime_handle: RuntimeHandle,
+    runtime_event_rx: std::sync::mpsc::Receiver<AppEvent>,
 }
 
 pub fn setup_chinese_fonts(ctx: &egui::Context) {
@@ -94,7 +97,14 @@ pub fn setup_chinese_fonts(ctx: &egui::Context) {
 }
 
 impl SignalDeskApp {
-    pub fn new(config: AppConfig, config_path: PathBuf, poller: PollerHandle) -> Self {
+    pub fn new(
+        config: AppConfig,
+        config_path: PathBuf,
+        poller: PollerHandle,
+        runtime: Runtime,
+        runtime_handle: RuntimeHandle,
+        runtime_event_rx: std::sync::mpsc::Receiver<AppEvent>,
+    ) -> Self {
         let _ = poller.command_tx.send(PollerCommand::ForcePoll);
         Self {
             config,
@@ -113,6 +123,9 @@ impl SignalDeskApp {
             consecutive_poll_failures: 0,
             last_meta: None,
             last_error: None,
+            _runtime: runtime,
+            runtime_handle,
+            runtime_event_rx,
         }
     }
 
@@ -543,6 +556,21 @@ impl SignalDeskApp {
 
         popover.inner || popover.response.hovered()
     }
+
+    fn drain_runtime_events(&mut self, ctx: &egui::Context) -> bool {
+        let mut had_events = false;
+        while let Ok(event) = self.runtime_event_rx.try_recv() {
+            had_events = true;
+            match event {
+                AppEvent::AdapterAction {
+                    target: AdapterId::MainWindow,
+                    action,
+                } => apply_viewport_close_plan(ctx, action_to_viewport_plan(action)),
+                _ => {}
+            }
+        }
+        had_events
+    }
 }
 
 fn load_cjk_font_bytes() -> Option<(String, Vec<u8>)> {
@@ -572,23 +600,12 @@ impl eframe::App for SignalDeskApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let had_events = self.drain_poller_events();
         self.apply_window_mode(ctx);
-        let close_requested = ctx.input(|i| i.viewport().close_requested());
-        let close_action = close_action_for_request(
-            close_requested,
-            default_allow_close(),
-            default_tray_available(),
-        );
-        match close_action_to_viewport_plan(close_action) {
-            ViewportClosePlan::Close => {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-            ViewportClosePlan::MinimizeToTray => {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-            }
-            ViewportClosePlan::Noop => {}
+        if ctx.input(|i| i.viewport().close_requested()) {
+            let _ = self
+                .runtime_handle
+                .send(crate::core::contract::AppCommand::RequestCloseMainWindow);
         }
+        let had_runtime_events = self.drain_runtime_events(ctx);
         let now_ms = chrono::Utc::now().timestamp_millis();
         let mut trigger_hovered = false;
 
@@ -722,7 +739,7 @@ impl eframe::App for SignalDeskApp {
 
         if self.hover_panel.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
-        } else if had_events {
+        } else if had_events || had_runtime_events {
             ctx.request_repaint();
         }
     }
@@ -855,11 +872,29 @@ fn period_has_unread(
     })
 }
 
-fn close_action_to_viewport_plan(action: Option<CloseAction>) -> ViewportClosePlan {
+fn action_to_viewport_plan(action: UiAction) -> ViewportClosePlan {
     match action {
-        Some(CloseAction::CloseApp) => ViewportClosePlan::Close,
-        Some(CloseAction::MinimizeToTray) => ViewportClosePlan::MinimizeToTray,
-        None => ViewportClosePlan::Noop,
+        UiAction::ShowMainWindow => ViewportClosePlan::Show,
+        UiAction::HideMainWindowToTray => ViewportClosePlan::MinimizeToTray,
+        UiAction::ExitProcess => ViewportClosePlan::Close,
+    }
+}
+
+fn apply_viewport_close_plan(ctx: &egui::Context, plan: ViewportClosePlan) {
+    match plan {
+        ViewportClosePlan::Show => {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        ViewportClosePlan::Close => {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        ViewportClosePlan::MinimizeToTray => {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
     }
 }
 
@@ -871,33 +906,21 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     #[test]
-    fn close_action_to_viewport_plan_maps_close_app_to_close() {
-        let plan = close_action_to_viewport_plan(Some(CloseAction::CloseApp));
+    fn action_to_viewport_plan_maps_close_app_to_close() {
+        let plan = action_to_viewport_plan(UiAction::ExitProcess);
         assert_eq!(plan, ViewportClosePlan::Close);
     }
 
     #[test]
-    fn close_action_to_viewport_plan_maps_minimize_to_tray_to_minimize_plan() {
-        let plan = close_action_to_viewport_plan(Some(CloseAction::MinimizeToTray));
+    fn action_to_viewport_plan_maps_minimize_to_tray_to_minimize_plan() {
+        let plan = action_to_viewport_plan(UiAction::HideMainWindowToTray);
         assert_eq!(plan, ViewportClosePlan::MinimizeToTray);
     }
 
     #[test]
-    fn close_action_to_viewport_plan_maps_none_to_noop() {
-        let plan = close_action_to_viewport_plan(None);
-        assert_eq!(plan, ViewportClosePlan::Noop);
-    }
-
-    #[test]
-    fn update_path_close_policy_resolves_to_close() {
-        let action = close_action_for_request(
-            true,
-            default_allow_close(),
-            default_tray_available(),
-        );
-        let plan = close_action_to_viewport_plan(action);
-
-        assert_eq!(plan, ViewportClosePlan::Close);
+    fn action_to_viewport_plan_maps_show_to_show_plan() {
+        let plan = action_to_viewport_plan(UiAction::ShowMainWindow);
+        assert_eq!(plan, ViewportClosePlan::Show);
     }
 
     #[test]

@@ -8,11 +8,16 @@ pub mod domain;
 pub mod poller;
 pub mod unread_panel;
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use tracing::Level;
 
+use crate::adapters::tray::TrayAdapter;
 use crate::api::ApiClient;
 use crate::app::{setup_chinese_fonts, SignalDeskApp};
 use crate::config::AppConfig;
+use crate::core::runtime::Runtime;
 use crate::poller::PollerHandle;
 
 pub fn run() {
@@ -35,6 +40,11 @@ pub fn run() {
         ..Default::default()
     };
 
+    let runtime_holder = Rc::new(RefCell::new(None));
+    let tray_holder = Rc::new(RefCell::new(None));
+    let runtime_slot = Rc::clone(&runtime_holder);
+    let tray_slot = Rc::clone(&tray_holder);
+
     let result = eframe::run_native(
         "Signal Desk",
         native_options,
@@ -42,7 +52,24 @@ pub fn run() {
             setup_chinese_fonts(&cc.egui_ctx);
             let api_client = ApiClient::new(&config.api);
             let poller = PollerHandle::spawn(api_client, config.clone(), cc.egui_ctx.clone());
-            Ok(Box::new(SignalDeskApp::new(config, config_path, poller)))
+            let (runtime, runtime_handle, runtime_event_rx) = Runtime::spawn(cc.egui_ctx.clone());
+            let tray_adapter = TrayAdapter::new(runtime_handle.clone()).ok();
+            let _ = runtime_handle.set_tray_available(tray_adapter.is_some());
+
+            runtime_slot.borrow_mut().replace(runtime);
+            tray_slot.borrow_mut().replace(tray_adapter);
+
+            Ok(Box::new(SignalDeskApp::new(
+                config,
+                config_path,
+                poller,
+                runtime_slot
+                    .borrow_mut()
+                    .take()
+                    .expect("runtime initialized once"),
+                runtime_handle,
+                runtime_event_rx,
+            )))
         }),
     );
 
