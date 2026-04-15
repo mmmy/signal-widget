@@ -10,6 +10,7 @@ use tracing::{info, warn};
 use crate::alerts::AlertEngine;
 use crate::api::{SignalPage, SignalState};
 use crate::config::{AppConfig, GroupConfig};
+use crate::core::queries::unread::{collect_new_unread_keys, effective_unread_keys};
 use crate::domain::{compare_period_desc, period_to_millis, Side, SignalKey};
 use crate::poller::{PollerCommand, PollerEvent, PollerHandle};
 use crate::unread_panel::{build_unread_items, HoverPanelState, HoverPanelTarget};
@@ -827,38 +828,11 @@ fn period_has_unread(
     })
 }
 
-fn effective_unread_keys(
-    signals: &HashMap<SignalKey, SignalState>,
-    pending_read: &HashSet<SignalKey>,
-) -> HashSet<SignalKey> {
-    signals
-        .iter()
-        .filter(|(key, state)| !state.read && !pending_read.contains(*key))
-        .map(|(key, _)| key.clone())
-        .collect()
-}
-
-fn collect_new_unread_keys(
-    previous_unread: &HashSet<SignalKey>,
-    current_unread: &HashSet<SignalKey>,
-) -> Vec<SignalKey> {
-    let mut keys: Vec<SignalKey> = current_unread
-        .difference(previous_unread)
-        .cloned()
-        .collect();
-    keys.sort_by(|a, b| {
-        a.symbol
-            .cmp(&b.symbol)
-            .then(a.period.cmp(&b.period))
-            .then(a.signal_type.cmp(&b.signal_type))
-    });
-    keys
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::GroupConfig;
+    use crate::core::queries::unread::collect_new_unread_keys;
     use std::collections::{HashMap, HashSet};
 
     #[test]
@@ -938,44 +912,6 @@ mod tests {
 
         let keys = collect_new_unread_keys(&previous, &current);
         assert_eq!(keys, vec![new_key]);
-    }
-
-    #[test]
-    fn effective_unread_keys_filters_read_and_pending() {
-        let key_unread = SignalKey::new("BTCUSDT", "15", "vegas");
-        let key_read = SignalKey::new("ETHUSDT", "15", "vegas");
-        let key_pending = SignalKey::new("SOLUSDT", "15", "vegas");
-
-        let signals = HashMap::from([
-            (
-                key_unread.clone(),
-                SignalState {
-                    sd: 1,
-                    t: 100,
-                    read: false,
-                },
-            ),
-            (
-                key_read,
-                SignalState {
-                    sd: -1,
-                    t: 100,
-                    read: true,
-                },
-            ),
-            (
-                key_pending.clone(),
-                SignalState {
-                    sd: 1,
-                    t: 100,
-                    read: false,
-                },
-            ),
-        ]);
-        let pending = HashSet::from([key_pending]);
-
-        let unread = effective_unread_keys(&signals, &pending);
-        assert_eq!(unread, HashSet::from([key_unread]));
     }
 
     #[test]
