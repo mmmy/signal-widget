@@ -32,5 +32,8 @@
 - [x] `ForcePoll` and `MarkRead` now flow through runtime instead of the UI writing to `poller.command_tx` directly
   Evidence: [runtime.rs](/F:/test/signal-desk-v2/.worktrees/runtime-adapter-separation/src/core/runtime.rs) forwards `AppCommand::ForcePoll` and `AppCommand::MarkRead` into `PollerCommand`. [app.rs](/F:/test/signal-desk-v2/.worktrees/runtime-adapter-separation/src/app.rs) now sends those commands via `runtime_handle`.
 
+- [x] `PollerEvent` is consumed by runtime rather than directly by the main window
+  Evidence: [runtime.rs](/F:/test/signal-desk-v2/.worktrees/runtime-adapter-separation/src/core/runtime.rs) drains `poller_event_rx`, translates poller events into `AppEvent`, and updates runtime state. [app.rs](/F:/test/signal-desk-v2/.worktrees/runtime-adapter-separation/src/app.rs) now drains only `runtime_event_rx` and no longer reads `poller.event_rx`.
+
 - [x] Legacy tray implementation has been fully retired from the worktree code path
   Evidence: [adapters/tray/mod.rs](/F:/test/signal-desk-v2/.worktrees/runtime-adapter-separation/src/adapters/tray/mod.rs) owns tray icon/menu/click handling and sends only `AppCommand`s to runtime. `src/tray.rs` is absent from this worktree.
