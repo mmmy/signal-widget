@@ -7,6 +7,7 @@ use chrono::TimeZone;
 use eframe::egui::{self, Color32};
 use tracing::{info, warn};
 
+use crate::alerts::AlertEngine;
 use crate::api::{SignalPage, SignalState};
 use crate::config::{AppConfig, GroupConfig};
 use crate::domain::{compare_period_desc, period_to_millis, Side, SignalKey};
@@ -44,6 +45,8 @@ pub struct SignalDeskApp {
     hover_panel: Option<HoverPanelState>,
     hover_anchor: Option<egui::Rect>,
     last_window_mode: Option<WindowModeState>,
+    alerts: AlertEngine,
+    has_seen_snapshot: bool,
     last_poll_ms: Option<i64>,
     last_meta: Option<(u64, u32, u32)>,
     last_error: Option<String>,
@@ -90,6 +93,8 @@ impl SignalDeskApp {
             hover_panel: None,
             hover_anchor: None,
             last_window_mode: None,
+            alerts: AlertEngine::default(),
+            has_seen_snapshot: false,
             last_poll_ms: None,
             last_meta: None,
             last_error: None,
@@ -133,6 +138,7 @@ impl SignalDeskApp {
     }
 
     fn consume_snapshot(&mut self, fetched_at_ms: i64, page: SignalPage) {
+        let previous_unread = effective_unread_keys(&self.signals, &self.pending_read);
         let mut next = HashMap::new();
         for row in &page.data {
             for (signal_type, state) in &row.signals {
@@ -152,6 +158,19 @@ impl SignalDeskApp {
         self.signals = next;
         self.last_poll_ms = Some(fetched_at_ms);
         self.last_meta = Some((page.total, page.page, page.page_size));
+
+        let current_unread = effective_unread_keys(&self.signals, &self.pending_read);
+        if self.has_seen_snapshot {
+            let new_unread = collect_new_unread_keys(&previous_unread, &current_unread);
+            self.alerts.on_new_unread(
+                chrono::Utc::now().timestamp_millis(),
+                &new_unread,
+                self.config.ui.notifications,
+                self.config.ui.sound,
+            );
+        } else {
+            self.has_seen_snapshot = true;
+        }
     }
 
     fn save_config(&mut self) {
@@ -576,10 +595,17 @@ impl eframe::App for SignalDeskApp {
                             .prefix("贴边宽度 "),
                     )
                     .changed();
-                ui.checkbox(&mut self.config.ui.notifications, "通知");
-                ui.checkbox(&mut self.config.ui.sound, "声音");
+                let notifications_changed = ui
+                    .checkbox(&mut self.config.ui.notifications, "通知")
+                    .changed();
+                let sound_changed = ui.checkbox(&mut self.config.ui.sound, "声音").changed();
 
-                if edge_changed || top_changed || width_changed {
+                if edge_changed
+                    || top_changed
+                    || width_changed
+                    || notifications_changed
+                    || sound_changed
+                {
                     self.save_config();
                 }
             });
@@ -774,6 +800,34 @@ fn period_has_unread(
     })
 }
 
+fn effective_unread_keys(
+    signals: &HashMap<SignalKey, SignalState>,
+    pending_read: &HashSet<SignalKey>,
+) -> HashSet<SignalKey> {
+    signals
+        .iter()
+        .filter(|(key, state)| !state.read && !pending_read.contains(*key))
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
+fn collect_new_unread_keys(
+    previous_unread: &HashSet<SignalKey>,
+    current_unread: &HashSet<SignalKey>,
+) -> Vec<SignalKey> {
+    let mut keys: Vec<SignalKey> = current_unread
+        .difference(previous_unread)
+        .cloned()
+        .collect();
+    keys.sort_by(|a, b| {
+        a.symbol
+            .cmp(&b.symbol)
+            .then(a.period.cmp(&b.period))
+            .then(a.signal_type.cmp(&b.signal_type))
+    });
+    keys
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -846,5 +900,54 @@ mod tests {
 
         let has_unread = period_has_unread(&signals, &pending, &group, "15");
         assert!(!has_unread);
+    }
+
+    #[test]
+    fn collect_new_unread_keys_returns_only_new_entries() {
+        let old_key = SignalKey::new("BTCUSDT", "15", "vegas");
+        let new_key = SignalKey::new("ETHUSDT", "60", "trend");
+        let previous = HashSet::from([old_key.clone()]);
+        let current = HashSet::from([old_key, new_key.clone()]);
+
+        let keys = collect_new_unread_keys(&previous, &current);
+        assert_eq!(keys, vec![new_key]);
+    }
+
+    #[test]
+    fn effective_unread_keys_filters_read_and_pending() {
+        let key_unread = SignalKey::new("BTCUSDT", "15", "vegas");
+        let key_read = SignalKey::new("ETHUSDT", "15", "vegas");
+        let key_pending = SignalKey::new("SOLUSDT", "15", "vegas");
+
+        let signals = HashMap::from([
+            (
+                key_unread.clone(),
+                SignalState {
+                    sd: 1,
+                    t: 100,
+                    read: false,
+                },
+            ),
+            (
+                key_read,
+                SignalState {
+                    sd: -1,
+                    t: 100,
+                    read: true,
+                },
+            ),
+            (
+                key_pending.clone(),
+                SignalState {
+                    sd: 1,
+                    t: 100,
+                    read: false,
+                },
+            ),
+        ]);
+        let pending = HashSet::from([key_pending]);
+
+        let unread = effective_unread_keys(&signals, &pending);
+        assert_eq!(unread, HashSet::from([key_unread]));
     }
 }
