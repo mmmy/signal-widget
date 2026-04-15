@@ -41,6 +41,8 @@ pub struct SignalDeskApp {
     config: AppConfig,
     config_path: PathBuf,
     poller: PollerHandle,
+    allow_close: bool,
+    tray_available: bool,
     signals: HashMap<SignalKey, SignalState>,
     pending_read: HashSet<SignalKey>,
     local_read_floor_t: HashMap<SignalKey, i64>,
@@ -91,6 +93,8 @@ impl SignalDeskApp {
             config,
             config_path,
             poller,
+            allow_close: true,
+            tray_available: false,
             signals: HashMap::new(),
             pending_read: HashSet::new(),
             local_read_floor_t: HashMap::new(),
@@ -564,10 +568,16 @@ impl eframe::App for SignalDeskApp {
         let had_events = self.drain_poller_events();
         self.apply_window_mode(ctx);
         let close_requested = ctx.input(|i| i.viewport().close_requested());
-        if let Some(CloseAction::CloseApp) =
-            close_action_for_request(close_requested, true, false)
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        match app_close_action(close_requested, self.allow_close, self.tray_available) {
+            Some(CloseAction::CloseApp) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Some(CloseAction::MinimizeToTray) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
+            None => {}
         }
         let now_ms = chrono::Utc::now().timestamp_millis();
         let mut trigger_hovered = false;
@@ -835,12 +845,38 @@ fn period_has_unread(
     })
 }
 
+fn app_close_action(
+    close_requested: bool,
+    allow_close: bool,
+    tray_available: bool,
+) -> Option<CloseAction> {
+    close_action_for_request(close_requested, allow_close, tray_available)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::GroupConfig;
     use crate::core::queries::unread::collect_new_unread_keys;
     use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn app_close_action_returns_close_app_when_close_is_allowed() {
+        let action = app_close_action(true, true, false);
+        assert_eq!(action, Some(CloseAction::CloseApp));
+    }
+
+    #[test]
+    fn app_close_action_returns_minimize_to_tray_when_tray_is_available() {
+        let action = app_close_action(true, false, true);
+        assert_eq!(action, Some(CloseAction::MinimizeToTray));
+    }
+
+    #[test]
+    fn app_close_action_returns_none_when_close_not_requested() {
+        let action = app_close_action(false, false, true);
+        assert_eq!(action, None);
+    }
 
     #[test]
     fn period_label_visual_marks_unread_level() {
