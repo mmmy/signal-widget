@@ -7,7 +7,6 @@ mod config;
 mod core;
 mod domain;
 mod poller;
-mod tray;
 mod unread_panel;
 
 use tracing::Level;
@@ -48,7 +47,6 @@ fn main() {
                 config,
                 config_path,
                 poller,
-                cc.egui_ctx.clone(),
             )))
         }),
     );
