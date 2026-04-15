@@ -26,8 +26,8 @@
   Evidence command: `cargo test -- --nocapture`
   Result: `37 passed; 0 failed`.
 
-- [ ] Runtime is the live source of truth for adapter events and lifecycle
-  Status: not complete yet. `main.rs` now uses the library entrypoint, but `RuntimeHandle` is still scaffolding and adapters are not yet fully wired through a live runtime loop.
+- [x] Runtime is the live source of truth for adapter events and lifecycle
+  Evidence: [runtime.rs](/F:/test/signal-desk-v2/.worktrees/runtime-adapter-separation/src/core/runtime.rs) now handles lifecycle commands and emits `AdapterAction` events. [app.rs](/F:/test/signal-desk-v2/.worktrees/runtime-adapter-separation/src/app.rs) consumes those runtime events and applies viewport actions.
 
-- [ ] Legacy tray implementation has been fully retired from the codebase
-  Status: not complete yet. Adapter mapping exists, but a full runtime-owned tray path is still a follow-up integration step.
+- [x] Legacy tray implementation has been fully retired from the worktree code path
+  Evidence: [adapters/tray/mod.rs](/F:/test/signal-desk-v2/.worktrees/runtime-adapter-separation/src/adapters/tray/mod.rs) owns tray icon/menu/click handling and sends only `AppCommand`s to runtime. `src/tray.rs` is absent from this worktree.
