@@ -14,7 +14,7 @@ pub enum AdapterId {
     FloatingWidget,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AppCommand {
     ForcePoll,
     MarkRead { key: SignalKey, read: bool },
