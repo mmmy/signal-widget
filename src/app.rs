@@ -48,6 +48,8 @@ pub struct SignalDeskApp {
     alerts: AlertEngine,
     has_seen_snapshot: bool,
     last_poll_ms: Option<i64>,
+    last_poll_ok: Option<bool>,
+    consecutive_poll_failures: u32,
     last_meta: Option<(u64, u32, u32)>,
     last_error: Option<String>,
 }
@@ -96,6 +98,8 @@ impl SignalDeskApp {
             alerts: AlertEngine::default(),
             has_seen_snapshot: false,
             last_poll_ms: None,
+            last_poll_ok: None,
+            consecutive_poll_failures: 0,
             last_meta: None,
             last_error: None,
         }
@@ -111,9 +115,14 @@ impl SignalDeskApp {
                     page,
                 } => {
                     self.consume_snapshot(fetched_at_ms, page);
+                    self.consecutive_poll_failures = 0;
+                    self.last_poll_ok = Some(true);
                     self.last_error = None;
                 }
                 PollerEvent::PollFailed { error } => {
+                    self.consecutive_poll_failures =
+                        self.consecutive_poll_failures.saturating_add(1);
+                    self.last_poll_ok = Some(self.consecutive_poll_failures < 2);
                     self.last_error = Some(error);
                 }
                 PollerEvent::SyncFailed { key, error } => {
@@ -557,22 +566,9 @@ impl eframe::App for SignalDeskApp {
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let total_unread = self.total_unread_count();
-                let mut total_text = egui::RichText::new(format!("Total unread: {total_unread}"))
-                    .color(Color32::BLACK);
-                if total_unread > 0 {
-                    total_text = total_text.background_color(Color32::from_rgb(245, 173, 0));
-                }
-                let total_badge = ui.label(total_text);
-                if total_badge.hovered() {
-                    trigger_hovered = true;
-                    self.hover_panel = Some(HoverPanelState {
-                        target: HoverPanelTarget::Global,
-                        close_deadline_ms: None,
-                    });
-                    self.hover_anchor = Some(total_badge.rect);
-                }
-                ui.separator();
+                let top_changed = ui
+                    .checkbox(&mut self.config.ui.always_on_top, "窗口置顶")
+                    .changed();
 
                 if ui.button("立即轮询").clicked() {
                     let _ = self.poller.command_tx.send(PollerCommand::ForcePoll);
@@ -583,9 +579,6 @@ impl eframe::App for SignalDeskApp {
 
                 let edge_changed = ui
                     .checkbox(&mut self.config.ui.edge_mode, "贴边模式")
-                    .changed();
-                let top_changed = ui
-                    .checkbox(&mut self.config.ui.always_on_top, "窗口置顶")
                     .changed();
                 let width_changed = ui
                     .add(
@@ -612,8 +605,21 @@ impl eframe::App for SignalDeskApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Signal Groups");
-            ui.small("交易信号监控台（MVP 骨架）");
+            let total_unread = self.total_unread_count();
+            let mut total_text = egui::RichText::new(format!("Total unread: {total_unread}"))
+                .color(Color32::BLACK);
+            if total_unread > 0 {
+                total_text = total_text.background_color(Color32::from_rgb(245, 173, 0));
+            }
+            let total_badge = ui.label(total_text);
+            if total_badge.hovered() {
+                trigger_hovered = true;
+                self.hover_panel = Some(HoverPanelState {
+                    target: HoverPanelTarget::Global,
+                    close_deadline_ms: None,
+                });
+                self.hover_anchor = Some(total_badge.rect);
+            }
             ui.add_space(8.0);
 
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -654,7 +660,7 @@ impl eframe::App for SignalDeskApp {
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             let poll_text = match self.last_poll_ms {
-                Some(ts) => format!("last poll: {}", ts),
+                Some(ts) => format!("last poll: {}", format_trigger_time_local(ts)),
                 None => "last poll: never".to_string(),
             };
             let meta = self
@@ -663,8 +669,15 @@ impl eframe::App for SignalDeskApp {
                     format!("total={total}, page={page}, pageSize={page_size}")
                 })
                 .unwrap_or_else(|| "total=0".to_string());
+            let (poll_state_color, poll_state_text) = match self.last_poll_ok {
+                Some(true) => (Color32::from_rgb(48, 181, 122), "轮询正常"),
+                Some(false) => (Color32::from_rgb(214, 84, 105), "上次轮询失败"),
+                None => (Color32::LIGHT_GRAY, "尚未轮询"),
+            };
 
             ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("●").color(poll_state_color))
+                    .on_hover_text(poll_state_text);
                 ui.small(poll_text);
                 ui.separator();
                 ui.small(meta);
