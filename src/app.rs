@@ -11,7 +11,9 @@ use crate::alerts::AlertEngine;
 use crate::api::{SignalPage, SignalState};
 use crate::config::{AppConfig, GroupConfig};
 use crate::core::queries::unread::{collect_new_unread_keys, effective_unread_keys};
-use crate::core::policy::window_lifecycle::{close_action_for_request, CloseAction};
+use crate::core::policy::window_lifecycle::{
+    close_action_for_request, default_allow_close, default_tray_available, CloseAction,
+};
 use crate::domain::{compare_period_desc, period_to_millis, Side, SignalKey};
 use crate::poller::{PollerCommand, PollerEvent, PollerHandle};
 use crate::unread_panel::{build_unread_items, HoverPanelState, HoverPanelTarget};
@@ -153,17 +155,6 @@ impl SignalDeskApp {
             }
         }
         had_events
-    }
-
-    fn close_policy_allow_close(&self) -> bool {
-        // The current app path still allows direct close requests; keep that
-        // explicit until a separate close-blocking mode is introduced.
-        true
-    }
-
-    fn close_policy_tray_available(&self) -> bool {
-        // Tray minimize is only considered on desktop platforms that support it.
-        cfg!(target_os = "windows")
     }
 
     fn consume_snapshot(&mut self, fetched_at_ms: i64, page: SignalPage) {
@@ -584,8 +575,8 @@ impl eframe::App for SignalDeskApp {
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         let close_action = close_action_for_request(
             close_requested,
-            self.close_policy_allow_close(),
-            self.close_policy_tray_available(),
+            default_allow_close(),
+            default_tray_available(),
         );
         match close_action_to_viewport_plan(close_action) {
             ViewportClosePlan::Close => {

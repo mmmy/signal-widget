@@ -4,6 +4,14 @@ pub enum CloseAction {
     CloseApp,
 }
 
+pub fn default_allow_close() -> bool {
+    true
+}
+
+pub fn default_tray_available() -> bool {
+    cfg!(target_os = "windows")
+}
+
 pub fn close_action_for_request(
     close_requested: bool,
     allow_close: bool,
