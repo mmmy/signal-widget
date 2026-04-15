@@ -37,12 +37,17 @@ struct WindowModeState {
     edge_width_bits: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewportClosePlan {
+    Close,
+    MinimizeToTray,
+    Noop,
+}
+
 pub struct SignalDeskApp {
     config: AppConfig,
     config_path: PathBuf,
     poller: PollerHandle,
-    allow_close: bool,
-    tray_available: bool,
     signals: HashMap<SignalKey, SignalState>,
     pending_read: HashSet<SignalKey>,
     local_read_floor_t: HashMap<SignalKey, i64>,
@@ -93,8 +98,6 @@ impl SignalDeskApp {
             config,
             config_path,
             poller,
-            allow_close: true,
-            tray_available: false,
             signals: HashMap::new(),
             pending_read: HashSet::new(),
             local_read_floor_t: HashMap::new(),
@@ -150,6 +153,17 @@ impl SignalDeskApp {
             }
         }
         had_events
+    }
+
+    fn close_policy_allow_close(&self) -> bool {
+        // The current app path still allows direct close requests; keep that
+        // explicit until a separate close-blocking mode is introduced.
+        true
+    }
+
+    fn close_policy_tray_available(&self) -> bool {
+        // Tray minimize is only considered on desktop platforms that support it.
+        cfg!(target_os = "windows")
     }
 
     fn consume_snapshot(&mut self, fetched_at_ms: i64, page: SignalPage) {
@@ -568,16 +582,21 @@ impl eframe::App for SignalDeskApp {
         let had_events = self.drain_poller_events();
         self.apply_window_mode(ctx);
         let close_requested = ctx.input(|i| i.viewport().close_requested());
-        match close_action_for_request(close_requested, self.allow_close, self.tray_available) {
-            Some(CloseAction::CloseApp) => {
+        let close_action = close_action_for_request(
+            close_requested,
+            self.close_policy_allow_close(),
+            self.close_policy_tray_available(),
+        );
+        match close_action_to_viewport_plan(close_action) {
+            ViewportClosePlan::Close => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-            Some(CloseAction::MinimizeToTray) => {
+            ViewportClosePlan::MinimizeToTray => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             }
-            None => {}
+            ViewportClosePlan::Noop => {}
         }
         let now_ms = chrono::Utc::now().timestamp_millis();
         let mut trigger_hovered = false;
@@ -841,8 +860,16 @@ fn period_has_unread(
         );
         signals
             .get(&key)
-            .is_some_and(|signal| !signal.read && !pending_read.contains(&key))
+        .is_some_and(|signal| !signal.read && !pending_read.contains(&key))
     })
+}
+
+fn close_action_to_viewport_plan(action: Option<CloseAction>) -> ViewportClosePlan {
+    match action {
+        Some(CloseAction::CloseApp) => ViewportClosePlan::Close,
+        Some(CloseAction::MinimizeToTray) => ViewportClosePlan::MinimizeToTray,
+        None => ViewportClosePlan::Noop,
+    }
 }
 
 #[cfg(test)]
@@ -853,21 +880,21 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     #[test]
-    fn app_close_action_returns_close_app_when_close_is_allowed() {
-        let action = close_action_for_request(true, true, false);
-        assert_eq!(action, Some(CloseAction::CloseApp));
+    fn close_action_to_viewport_plan_maps_close_app_to_close() {
+        let plan = close_action_to_viewport_plan(Some(CloseAction::CloseApp));
+        assert_eq!(plan, ViewportClosePlan::Close);
     }
 
     #[test]
-    fn app_close_action_returns_minimize_to_tray_when_tray_is_available() {
-        let action = close_action_for_request(true, false, true);
-        assert_eq!(action, Some(CloseAction::MinimizeToTray));
+    fn close_action_to_viewport_plan_maps_minimize_to_tray_to_minimize_plan() {
+        let plan = close_action_to_viewport_plan(Some(CloseAction::MinimizeToTray));
+        assert_eq!(plan, ViewportClosePlan::MinimizeToTray);
     }
 
     #[test]
-    fn app_close_action_returns_none_when_close_not_requested() {
-        let action = close_action_for_request(false, false, true);
-        assert_eq!(action, None);
+    fn close_action_to_viewport_plan_maps_none_to_noop() {
+        let plan = close_action_to_viewport_plan(None);
+        assert_eq!(plan, ViewportClosePlan::Noop);
     }
 
     #[test]
