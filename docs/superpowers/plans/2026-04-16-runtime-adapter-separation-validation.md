@@ -35,5 +35,8 @@
 - [x] `PollerEvent` is consumed by runtime rather than directly by the main window
   Evidence: [runtime.rs](/F:/test/signal-desk-v2/.worktrees/runtime-adapter-separation/src/core/runtime.rs) drains `poller_event_rx`, translates poller events into `AppEvent`, and updates runtime state. [app.rs](/F:/test/signal-desk-v2/.worktrees/runtime-adapter-separation/src/app.rs) now drains only `runtime_event_rx` and no longer reads `poller.event_rx`.
 
+- [x] Main window renders runtime snapshot rather than owning live signal state
+  Evidence: [app.rs](/F:/test/signal-desk-v2/.worktrees/runtime-adapter-separation/src/app.rs) now stores `snapshot: AppSnapshot` and uses it for unread counts, signal rows, and poll status rendering. The previous local signal/poll state fields were removed.
+
 - [x] Legacy tray implementation has been fully retired from the worktree code path
   Evidence: [adapters/tray/mod.rs](/F:/test/signal-desk-v2/.worktrees/runtime-adapter-separation/src/adapters/tray/mod.rs) owns tray icon/menu/click handling and sends only `AppCommand`s to runtime. `src/tray.rs` is absent from this worktree.
