@@ -563,6 +563,14 @@ impl eframe::App for SignalDeskApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let had_events = self.drain_poller_events();
         self.apply_window_mode(ctx);
+        let close_action = close_action_for_request(
+            ctx.input(|i| i.viewport().close_requested()),
+            true,
+            true,
+        );
+        if let Some(CloseAction::MinimizeToTray) = close_action {
+            // Preserve current behavior: this app still allows the window to close.
+        }
         let now_ms = chrono::Utc::now().timestamp_millis();
         let mut trigger_hovered = false;
 
