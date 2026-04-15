@@ -23,14 +23,6 @@ impl RuntimeHandle {
     pub fn emit(&self, event: AppEvent) -> anyhow::Result<()> {
         self.event_tx.send(event).context("send event failed")
     }
-
-    pub fn new_for_test() -> Self {
-        let (command_tx, command_rx) = mpsc::channel::<AppCommand>();
-        let (event_tx, event_rx) = mpsc::channel::<AppEvent>();
-        std::mem::forget(command_rx);
-        std::mem::forget(event_rx);
-        Self::new(command_tx, event_tx)
-    }
 }
 
 pub struct Runtime {
@@ -40,11 +32,26 @@ pub struct Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::contract::AppCommand;
+
+    fn test_handle() -> RuntimeHandle {
+        let (command_tx, command_rx) = mpsc::channel::<AppCommand>();
+        let (event_tx, event_rx) = mpsc::channel::<AppEvent>();
+        std::mem::forget(command_rx);
+        std::mem::forget(event_rx);
+        RuntimeHandle::new(command_tx, event_tx)
+    }
 
     #[test]
     fn runtime_accepts_force_poll_command() {
-        let handle = RuntimeHandle::new_for_test();
+        let handle = test_handle();
         handle.send(AppCommand::ForcePoll).expect("send command");
+    }
+
+    #[test]
+    fn runtime_emits_snapshot_event() {
+        let handle = test_handle();
+        handle
+            .emit(AppEvent::SnapshotUpdated(Default::default()))
+            .expect("emit event");
     }
 }
