@@ -37,8 +37,10 @@ impl ConfigStore {
         F: FnOnce(&mut crate::config::UiConfig),
     {
         let mut inner = self.inner.lock();
-        update(&mut inner.config.ui);
-        inner.config.save_to(Path::new(&inner.path))?;
+        let mut draft = inner.config.clone();
+        update(&mut draft.ui);
+        draft.save_to(Path::new(&inner.path))?;
+        inner.config = draft;
         Ok(inner.config.clone())
     }
 
@@ -54,9 +56,17 @@ impl ConfigStore {
 mod tests {
     use super::ConfigStore;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("signal-desk-widget-plan-{name}.yaml"))
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "signal-desk-widget-plan-{name}-{unique}-{}.yaml",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -84,7 +94,9 @@ mod tests {
         assert_eq!(updated.ui.widget.y, 220.0);
 
         let raw = std::fs::read_to_string(path).expect("read persisted yaml");
-        assert!(raw.contains("x: 180.0"));
-        assert!(raw.contains("y: 220.0"));
+        let reloaded: crate::config::AppConfig =
+            serde_yaml::from_str(&raw).expect("reload persisted yaml");
+        assert_eq!(reloaded.ui.widget.x, 180.0);
+        assert_eq!(reloaded.ui.widget.y, 220.0);
     }
 }
