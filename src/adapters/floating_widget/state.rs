@@ -15,9 +15,9 @@ pub struct WidgetViewModel {
     pub connection_state: WidgetConnectionState,
 }
 
-pub fn build_view_model(snapshot: &AppSnapshot) -> WidgetViewModel {
+pub fn build_view_model(snapshot: &AppSnapshot, unread_count: usize) -> WidgetViewModel {
     WidgetViewModel {
-        unread_text: snapshot.unread_count.to_string(),
+        unread_text: unread_count.to_string(),
         connection_state: match snapshot.last_poll_ok {
             Some(true) => WidgetConnectionState::Healthy,
             Some(false) => WidgetConnectionState::Failed,
@@ -46,9 +46,22 @@ mod tests {
             ..Default::default()
         };
 
-        let vm = build_view_model(&snapshot);
+        let vm = build_view_model(&snapshot, 12);
         assert_eq!(vm.unread_text, "12");
         assert_eq!(vm.connection_state, WidgetConnectionState::Failed);
+    }
+
+    #[test]
+    fn build_view_model_uses_supplied_unread_count_instead_of_snapshot_total() {
+        let snapshot = crate::core::contract::AppSnapshot {
+            unread_count: 12,
+            last_poll_ok: Some(true),
+            ..Default::default()
+        };
+
+        let vm = build_view_model(&snapshot, 3);
+        assert_eq!(vm.unread_text, "3");
+        assert_eq!(vm.connection_state, WidgetConnectionState::Healthy);
     }
 
     #[test]

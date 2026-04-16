@@ -514,9 +514,11 @@ impl SignalDeskApp {
 
     fn sync_widget_viewport(&mut self, ctx: &egui::Context) {
         if self.config.ui.widget.visible {
+            let total_unread = self.total_unread_count();
             crate::adapters::floating_widget::show_widget_viewport(
                 ctx,
                 &self.snapshot,
+                total_unread,
                 &self.config.ui.widget,
                 &self.config_store,
             );

@@ -70,9 +70,9 @@ mod tests {
     }
 
     #[test]
-    fn widget_defaults_are_visible_and_have_expected_size() {
+    fn widget_defaults_are_hidden_and_have_expected_size() {
         let cfg = crate::config::UiConfig::default();
-        assert!(cfg.widget.visible);
+        assert!(!cfg.widget.visible);
         assert_eq!(cfg.widget.size, 56.0);
         assert_eq!(cfg.widget.x, 32.0);
         assert_eq!(cfg.widget.y, 32.0);

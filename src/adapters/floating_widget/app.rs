@@ -33,6 +33,7 @@ fn mark_native_install(installed: &AtomicBool) {
 pub fn show_widget_viewport(
     ctx: &egui::Context,
     snapshot: &AppSnapshot,
+    unread_count: usize,
     widget: &WidgetConfig,
     config_store: &ConfigStore,
 ) {
@@ -48,6 +49,7 @@ pub fn show_widget_viewport(
         .with_always_on_top();
     let snapshot = snapshot.clone();
     let widget = widget.clone();
+    let unread_count = unread_count;
     let config_store = config_store.clone();
     let native_installed = Arc::new(AtomicBool::new(false));
 
@@ -77,7 +79,7 @@ pub fn show_widget_viewport(
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(egui::Color32::TRANSPARENT))
             .show(viewport_ctx, |ui| {
-            let vm = build_view_model(&snapshot);
+            let vm = build_view_model(&snapshot, unread_count);
             let response = render_widget(ui, widget.size, &vm);
             if response.drag_started() {
                 viewport_ctx.send_viewport_cmd(ViewportCommand::StartDrag);

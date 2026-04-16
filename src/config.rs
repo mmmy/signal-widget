@@ -120,7 +120,7 @@ pub struct WidgetConfig {
 impl Default for WidgetConfig {
     fn default() -> Self {
         Self {
-            visible: true,
+            visible: false,
             x: 32.0,
             y: 32.0,
             size: 56.0,
