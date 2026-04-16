@@ -14,14 +14,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::thread;
 
-use tracing::Level;
+use tracing::{warn, Level};
 use tokio::sync::broadcast;
 use winit::raw_window_handle::HasWindowHandle;
 
 use crate::adapters::tray::TrayAdapter;
 use crate::api::ApiClient;
 use crate::app::{setup_chinese_fonts, SignalDeskApp};
-use crate::config::AppConfig;
+use crate::config_store::ConfigStore;
 use crate::core::contract::{AppEvent, ShellCommand, WindowId};
 use crate::core::runtime::Runtime;
 use crate::poller::PollerHandle;
@@ -47,13 +47,23 @@ enum MainWindowShellEffect {
     Exit,
 }
 
-fn main_window_shell_effect(command: &ShellCommand) -> Option<MainWindowShellEffect> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellEffect {
+    MainWindow(MainWindowShellEffect),
+    WidgetVisibility(bool),
+}
+
+fn shell_effect(command: &ShellCommand) -> Option<ShellEffect> {
     match command {
         ShellCommand::ShowWindow(WindowId::Main) | ShellCommand::FocusWindow(WindowId::Main) => {
-            Some(MainWindowShellEffect::Show)
+            Some(ShellEffect::MainWindow(MainWindowShellEffect::Show))
         }
-        ShellCommand::HideWindow(WindowId::Main) => Some(MainWindowShellEffect::Hide),
-        ShellCommand::ExitProcess => Some(MainWindowShellEffect::Exit),
+        ShellCommand::HideWindow(WindowId::Main) => {
+            Some(ShellEffect::MainWindow(MainWindowShellEffect::Hide))
+        }
+        ShellCommand::ShowWindow(WindowId::Widget) => Some(ShellEffect::WidgetVisibility(true)),
+        ShellCommand::HideWindow(WindowId::Widget) => Some(ShellEffect::WidgetVisibility(false)),
+        ShellCommand::ExitProcess => Some(ShellEffect::MainWindow(MainWindowShellEffect::Exit)),
         _ => None,
     }
 }
@@ -78,16 +88,33 @@ fn apply_main_window_shell_effect(
     }
 }
 
-fn spawn_main_window_shell_pump(
+fn apply_shell_effect(
+    ctx: &eframe::egui::Context,
+    main_window: &MainWindowController,
+    config_store: &ConfigStore,
+    effect: ShellEffect,
+) {
+    match effect {
+        ShellEffect::MainWindow(effect) => apply_main_window_shell_effect(ctx, main_window, effect),
+        ShellEffect::WidgetVisibility(visible) => {
+            if let Err(err) = config_store.update_ui(|ui| ui.widget.visible = visible) {
+                warn!("failed to persist widget visibility: {}", err);
+            }
+        }
+    }
+}
+
+fn spawn_shell_pump(
     ctx: eframe::egui::Context,
     main_window: MainWindowController,
+    config_store: ConfigStore,
     mut event_rx: broadcast::Receiver<AppEvent>,
 ) {
     thread::spawn(move || loop {
         match event_rx.blocking_recv() {
             Ok(AppEvent::ShellCommand(command)) => {
-                if let Some(effect) = main_window_shell_effect(&command) {
-                    apply_main_window_shell_effect(&ctx, &main_window, effect);
+                if let Some(effect) = shell_effect(&command) {
+                    apply_shell_effect(&ctx, &main_window, &config_store, effect);
                 }
             }
             Ok(_) => {}
@@ -98,13 +125,15 @@ fn spawn_main_window_shell_pump(
 }
 
 pub fn run() {
-    let (config, config_path) = match AppConfig::load_or_create() {
-        Ok(data) => data,
+    let config_store = match ConfigStore::load() {
+        Ok(store) => store,
         Err(err) => {
             eprintln!("failed to load config: {err}");
             return;
         }
     };
+    let config = config_store.snapshot();
+    let config_path = config_store.path();
     init_tracing();
     println!("using config: {}", config_path.display());
 
@@ -131,9 +160,10 @@ pub fn run() {
             let runtime_snapshot_rx = runtime_handle.subscribe_snapshot();
             let main_window =
                 MainWindowController::from_raw_window_handle(cc.window_handle()?.as_raw())?;
-            spawn_main_window_shell_pump(
+            spawn_shell_pump(
                 cc.egui_ctx.clone(),
                 main_window.clone(),
+                config_store.clone(),
                 runtime_event_rx,
             );
             let tray_adapter = match TrayAdapter::new(main_window.clone(), cc.egui_ctx.clone()) {
@@ -175,7 +205,34 @@ fn init_tracing() {
 
 #[cfg(test)]
 mod integration_contract_tests {
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::config::AppConfig;
+    use crate::config_store::ConfigStore;
     use crate::core::contract::{AppCommand, ShellCommand, WindowId};
+    use crate::shell::MainWindowController;
+    use winit::raw_window_handle::{RawWindowHandle, Win32WindowHandle};
+
+    fn temp_path(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "signal-desk-shell-effect-{name}-{unique}-{}.yaml",
+            std::process::id()
+        ))
+    }
+
+    fn test_main_window_controller() -> MainWindowController {
+        use core::num::NonZeroIsize;
+
+        MainWindowController::from_raw_window_handle(RawWindowHandle::Win32(
+            Win32WindowHandle::new(NonZeroIsize::new(7).expect("non zero")),
+        ))
+        .expect("controller")
+    }
 
     #[test]
     fn command_contract_exposes_force_poll() {
@@ -195,36 +252,66 @@ mod integration_contract_tests {
     #[test]
     fn main_window_shell_effect_maps_main_window_commands() {
         assert_eq!(
-            super::main_window_shell_effect(&ShellCommand::ShowWindow(WindowId::Main)),
-            Some(super::MainWindowShellEffect::Show)
+            super::shell_effect(&ShellCommand::ShowWindow(WindowId::Main)),
+            Some(super::ShellEffect::MainWindow(
+                super::MainWindowShellEffect::Show
+            ))
         );
         assert_eq!(
-            super::main_window_shell_effect(&ShellCommand::FocusWindow(WindowId::Main)),
-            Some(super::MainWindowShellEffect::Show)
+            super::shell_effect(&ShellCommand::FocusWindow(WindowId::Main)),
+            Some(super::ShellEffect::MainWindow(
+                super::MainWindowShellEffect::Show
+            ))
         );
         assert_eq!(
-            super::main_window_shell_effect(&ShellCommand::HideWindow(WindowId::Main)),
-            Some(super::MainWindowShellEffect::Hide)
+            super::shell_effect(&ShellCommand::HideWindow(WindowId::Main)),
+            Some(super::ShellEffect::MainWindow(
+                super::MainWindowShellEffect::Hide
+            ))
         );
         assert_eq!(
-            super::main_window_shell_effect(&ShellCommand::ExitProcess),
-            Some(super::MainWindowShellEffect::Exit)
+            super::shell_effect(&ShellCommand::ExitProcess),
+            Some(super::ShellEffect::MainWindow(
+                super::MainWindowShellEffect::Exit
+            ))
         );
     }
 
     #[test]
-    fn main_window_shell_effect_ignores_non_main_window_commands() {
+    fn shell_effect_maps_widget_visibility_commands() {
         assert_eq!(
-            super::main_window_shell_effect(&ShellCommand::ShowWindow(WindowId::Widget)),
-            None
+            super::shell_effect(&ShellCommand::ShowWindow(WindowId::Widget)),
+            Some(super::ShellEffect::WidgetVisibility(true))
         );
         assert_eq!(
-            super::main_window_shell_effect(&ShellCommand::HideWindow(WindowId::Widget)),
-            None
+            super::shell_effect(&ShellCommand::HideWindow(WindowId::Widget)),
+            Some(super::ShellEffect::WidgetVisibility(false))
         );
+    }
+
+    #[test]
+    fn shell_effect_ignores_non_handled_widget_commands() {
         assert_eq!(
-            super::main_window_shell_effect(&ShellCommand::FocusWindow(WindowId::Widget)),
+            super::shell_effect(&ShellCommand::FocusWindow(WindowId::Widget)),
             None
         );
+    }
+
+    #[test]
+    fn apply_shell_effect_persists_widget_visibility() {
+        let path = temp_path("widget-visible");
+        let store = ConfigStore::new_for_test(AppConfig::default(), path.clone());
+
+        super::apply_shell_effect(
+            &eframe::egui::Context::default(),
+            &test_main_window_controller(),
+            &store,
+            super::ShellEffect::WidgetVisibility(false),
+        );
+
+        let updated = store.snapshot();
+        assert!(!updated.ui.widget.visible);
+
+        std::fs::remove_file(path).expect("remove temp config");
     }
 }
