@@ -108,6 +108,26 @@ impl Default for PollConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WidgetConfig {
+    pub visible: bool,
+    pub x: f32,
+    pub y: f32,
+    pub size: f32,
+}
+
+impl Default for WidgetConfig {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            x: 32.0,
+            y: 32.0,
+            size: 56.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
@@ -116,6 +136,7 @@ pub struct UiConfig {
     pub always_on_top: bool,
     pub notifications: bool,
     pub sound: bool,
+    pub widget: WidgetConfig,
 }
 
 impl Default for UiConfig {
@@ -126,6 +147,7 @@ impl Default for UiConfig {
             always_on_top: true,
             notifications: true,
             sound: false,
+            widget: WidgetConfig::default(),
         }
     }
 }
