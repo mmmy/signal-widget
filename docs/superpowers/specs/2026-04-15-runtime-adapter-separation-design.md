@@ -286,3 +286,14 @@ src/
 3. 核心状态只存在于 `core/state`，Adapter 不持有可写业务真状态
 4. `src/app.rs`（或替代主窗口模块）不再直接处理 poller 事件与业务归并
 5. 新增一个 Adapter 时无需修改 Runtime 业务核心（仅注册与契约实现）
+
+## 14. 实施状态
+
+截至 `codex/runtime-adapter-separation` 当前实现：
+
+1. Core contract / state / runtime scaffolding 已建立
+2. Tray 与 floating widget 的 adapter command shell 已建立
+3. Poll request shaping 与 window lifecycle policy 已从旧 UI 逻辑中抽出
+4. Binary 已改为通过 library entrypoint 启动，避免 lib/bin 双模块图漂移
+5. Runtime 已成为 adapter 事件与窗口生命周期的唯一实时来源
+6. `ForcePoll` / `MarkRead` / `PollerEvent` 已经通过 Runtime 闭环流转，主窗口改为渲染 runtime snapshot

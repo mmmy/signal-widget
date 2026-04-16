@@ -8,10 +8,13 @@ use eframe::egui::{self, Color32};
 use tracing::{info, warn};
 
 use crate::alerts::AlertEngine;
-use crate::api::{SignalPage, SignalState};
+use crate::api::SignalState;
 use crate::config::{AppConfig, GroupConfig};
+use crate::core::contract::{AdapterId, AppEvent, AppSnapshot, UiAction};
+use crate::core::queries::unread::{collect_new_unread_keys, effective_unread_keys};
+use crate::core::runtime::{Runtime, RuntimeHandle};
 use crate::domain::{compare_period_desc, period_to_millis, Side, SignalKey};
-use crate::poller::{PollerCommand, PollerEvent, PollerHandle};
+use crate::poller::PollerHandle;
 use crate::unread_panel::{build_unread_items, HoverPanelState, HoverPanelTarget};
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -35,23 +38,28 @@ struct WindowModeState {
     edge_width_bits: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewportClosePlan {
+    Show,
+    Close,
+    MinimizeToTray,
+}
+
 pub struct SignalDeskApp {
     config: AppConfig,
     config_path: PathBuf,
-    poller: PollerHandle,
-    signals: HashMap<SignalKey, SignalState>,
-    pending_read: HashSet<SignalKey>,
-    local_read_floor_t: HashMap<SignalKey, i64>,
+    _poller: PollerHandle,
+    snapshot: AppSnapshot,
     hover_panel: Option<HoverPanelState>,
     hover_anchor: Option<egui::Rect>,
     last_window_mode: Option<WindowModeState>,
     alerts: AlertEngine,
     has_seen_snapshot: bool,
-    last_poll_ms: Option<i64>,
-    last_poll_ok: Option<bool>,
-    consecutive_poll_failures: u32,
-    last_meta: Option<(u64, u32, u32)>,
-    last_error: Option<String>,
+    local_error: Option<String>,
+    // Keep the runtime alive for the lifetime of the app.
+    _runtime: Runtime,
+    runtime_handle: RuntimeHandle,
+    runtime_event_rx: std::sync::mpsc::Receiver<AppEvent>,
 }
 
 pub fn setup_chinese_fonts(ctx: &egui::Context) {
@@ -83,102 +91,29 @@ pub fn setup_chinese_fonts(ctx: &egui::Context) {
 }
 
 impl SignalDeskApp {
-    pub fn new(config: AppConfig, config_path: PathBuf, poller: PollerHandle) -> Self {
-        let _ = poller.command_tx.send(PollerCommand::ForcePoll);
+    pub fn new(
+        config: AppConfig,
+        config_path: PathBuf,
+        poller: PollerHandle,
+        runtime: Runtime,
+        runtime_handle: RuntimeHandle,
+        runtime_event_rx: std::sync::mpsc::Receiver<AppEvent>,
+    ) -> Self {
+        let _ = runtime_handle.send(crate::core::contract::AppCommand::ForcePoll);
         Self {
             config,
             config_path,
-            poller,
-            signals: HashMap::new(),
-            pending_read: HashSet::new(),
-            local_read_floor_t: HashMap::new(),
+            _poller: poller,
+            snapshot: AppSnapshot::default(),
             hover_panel: None,
             hover_anchor: None,
             last_window_mode: None,
             alerts: AlertEngine::default(),
             has_seen_snapshot: false,
-            last_poll_ms: None,
-            last_poll_ok: None,
-            consecutive_poll_failures: 0,
-            last_meta: None,
-            last_error: None,
-        }
-    }
-
-    fn drain_poller_events(&mut self) -> bool {
-        let mut had_events = false;
-        while let Ok(event) = self.poller.event_rx.try_recv() {
-            had_events = true;
-            match event {
-                PollerEvent::Snapshot {
-                    fetched_at_ms,
-                    page,
-                } => {
-                    self.consume_snapshot(fetched_at_ms, page);
-                    self.consecutive_poll_failures = 0;
-                    self.last_poll_ok = Some(true);
-                    self.last_error = None;
-                }
-                PollerEvent::PollFailed { error } => {
-                    self.consecutive_poll_failures =
-                        self.consecutive_poll_failures.saturating_add(1);
-                    self.last_poll_ok = Some(self.consecutive_poll_failures < 2);
-                    self.last_error = Some(error);
-                }
-                PollerEvent::SyncFailed { key, error } => {
-                    let was_pending = self.pending_read.remove(&key);
-                    self.local_read_floor_t.remove(&key);
-                    if was_pending {
-                        if let Some(state) = self.signals.get_mut(&key) {
-                            state.read = false;
-                        }
-                    }
-                    self.last_error = Some(format!(
-                        "sync failed [{} {} {}]: {}",
-                        key.symbol, key.period, key.signal_type, error
-                    ));
-                }
-                PollerEvent::MarkReadSynced { key } => {
-                    self.pending_read.remove(&key);
-                }
-            }
-        }
-        had_events
-    }
-
-    fn consume_snapshot(&mut self, fetched_at_ms: i64, page: SignalPage) {
-        let previous_unread = effective_unread_keys(&self.signals, &self.pending_read);
-        let mut next = HashMap::new();
-        for row in &page.data {
-            for (signal_type, state) in &row.signals {
-                let key =
-                    SignalKey::new(row.symbol.clone(), row.period.clone(), signal_type.clone());
-                let mut next_state = state.clone();
-                if let Some(&floor_t) = self.local_read_floor_t.get(&key) {
-                    if next_state.t <= floor_t {
-                        next_state.read = true;
-                    } else {
-                        self.local_read_floor_t.remove(&key);
-                    }
-                }
-                next.insert(key, next_state);
-            }
-        }
-        self.signals = next;
-        self.last_poll_ms = Some(fetched_at_ms);
-        self.last_meta = Some((page.total, page.page, page.page_size));
-
-        let current_unread = effective_unread_keys(&self.signals, &self.pending_read);
-        if self.has_seen_snapshot {
-            let new_unread = collect_new_unread_keys(&previous_unread, &current_unread);
-            self.alerts.on_new_unread(
-                chrono::Utc::now().timestamp_millis(),
-                &new_unread,
-                self.config.ui.notifications,
-                self.config.ui.sound,
-            );
-        } else {
-            self.has_seen_snapshot = true;
+            local_error: None,
+            _runtime: runtime,
+            runtime_handle,
+            runtime_event_rx,
         }
     }
 
@@ -186,9 +121,9 @@ impl SignalDeskApp {
         match self.config.save_to(&self.config_path) {
             Ok(()) => {
                 info!("config saved to {}", self.config_path.display());
-                self.last_error = None;
+                self.local_error = None;
             }
-            Err(err) => self.last_error = Some(format!("save config failed: {}", err)),
+            Err(err) => self.local_error = Some(format!("save config failed: {}", err)),
         }
     }
 
@@ -230,27 +165,26 @@ impl SignalDeskApp {
             })
             .filter_map(|(period, signal_type)| {
                 let key = SignalKey::new(group.symbol.clone(), period.clone(), signal_type.clone());
-                self.signals.get(&key).map(|sig| (key, sig))
+                self.snapshot.signals.get(&key).map(|sig| (key, sig))
             })
-            .filter(|(key, sig)| !sig.read && !self.pending_read.contains(key))
+            .filter(|(key, sig)| !sig.read && !self.snapshot.pending_read.contains(key))
             .count()
     }
 
     fn total_unread_count(&self) -> usize {
-        build_unread_items(
-            &self.config.groups,
-            &self.signals,
-            &self.pending_read,
-            &HoverPanelTarget::Global,
-        )
-        .len()
+        self.snapshot.unread_count
     }
 
     fn mark_group_read(&mut self, group: &GroupConfig) {
         for period in &group.periods {
             for signal_type in &group.signal_types {
                 let key = SignalKey::new(group.symbol.clone(), period.clone(), signal_type.clone());
-                let Some(is_unread) = self.signals.get(&key).map(|signal| !signal.read) else {
+                let Some(is_unread) = self
+                    .snapshot
+                    .signals
+                    .get(&key)
+                    .map(|signal| !signal.read)
+                else {
                     continue;
                 };
                 if !is_unread {
@@ -262,34 +196,20 @@ impl SignalDeskApp {
     }
 
     fn mark_one_read(&mut self, key: SignalKey) {
-        if self.pending_read.contains(&key) {
+        if self.snapshot.pending_read.contains(&key) {
             return;
         }
 
-        if let Some(signal_t) = self.signals.get(&key).map(|signal| signal.t) {
-            self.local_read_floor_t.insert(key.clone(), signal_t);
-        }
-        if let Some(signal) = self.signals.get_mut(&key) {
-            signal.read = true;
-        }
-        self.pending_read.insert(key.clone());
-
-        if let Err(err) = self.poller.command_tx.send(PollerCommand::MarkRead {
+        if let Err(err) = self.runtime_handle.send(crate::core::contract::AppCommand::MarkRead {
             key: key.clone(),
             read: true,
         }) {
-            self.pending_read.remove(&key);
-            self.local_read_floor_t.remove(&key);
-            if let Some(signal) = self.signals.get_mut(&key) {
-                signal.read = false;
-            }
-
             let message = format!(
                 "send mark-read failed [{} {} {}]: {}",
                 key.symbol, key.period, key.signal_type, err
             );
             warn!("{}", message);
-            self.last_error = Some(message);
+            self.local_error = Some(message);
         }
     }
 
@@ -306,7 +226,7 @@ impl SignalDeskApp {
                 period.to_string(),
                 signal_type.clone(),
             );
-            let Some(signal) = self.signals.get(&key) else {
+            let Some(signal) = self.snapshot.signals.get(&key) else {
                 continue;
             };
             let elapsed = now_ms.saturating_sub(signal.t);
@@ -317,7 +237,7 @@ impl SignalDeskApp {
 
             let idx = 59 - slot as usize;
             let next_side = Side::from_code(signal.sd);
-            let unread = !signal.read && !self.pending_read.contains(&key);
+            let unread = !signal.read && !self.snapshot.pending_read.contains(&key);
             merge_bar_cell(&mut bars[idx], next_side, unread);
         }
         bars
@@ -325,7 +245,12 @@ impl SignalDeskApp {
 
     fn render_period_row(&mut self, ui: &mut egui::Ui, group: &GroupConfig, period: &str) {
         let bars = self.build_bars(group, period);
-        let has_unread = period_has_unread(&self.signals, &self.pending_read, group, period);
+        let has_unread = period_has_unread(
+            &self.snapshot.signals,
+            &self.snapshot.pending_read,
+            group,
+            period,
+        );
         let visual = period_label_visual(period, has_unread);
         let mut level_text = egui::RichText::new(visual.text).size(11.0).monospace();
         if let Some(color) = visual.color {
@@ -424,8 +349,8 @@ impl SignalDeskApp {
 
         let rows = build_unread_items(
             &self.config.groups,
-            &self.signals,
-            &self.pending_read,
+            &self.snapshot.signals,
+            &self.snapshot.pending_read,
             &panel.target,
         );
         let title = match &panel.target {
@@ -532,6 +457,40 @@ impl SignalDeskApp {
 
         popover.inner || popover.response.hovered()
     }
+
+    fn drain_runtime_events(&mut self, ctx: &egui::Context) -> bool {
+        let mut had_events = false;
+        while let Ok(event) = self.runtime_event_rx.try_recv() {
+            had_events = true;
+            match event {
+                AppEvent::SnapshotUpdated(snapshot) => {
+                    let previous_unread =
+                        effective_unread_keys(&self.snapshot.signals, &self.snapshot.pending_read);
+                    let current_unread =
+                        effective_unread_keys(&snapshot.signals, &snapshot.pending_read);
+
+                    if self.has_seen_snapshot {
+                        let new_unread = collect_new_unread_keys(&previous_unread, &current_unread);
+                        self.alerts.on_new_unread(
+                            chrono::Utc::now().timestamp_millis(),
+                            &new_unread,
+                            self.config.ui.notifications,
+                            self.config.ui.sound,
+                        );
+                    } else {
+                        self.has_seen_snapshot = true;
+                    }
+                    self.snapshot = snapshot;
+                }
+                AppEvent::AdapterAction {
+                    target: AdapterId::MainWindow,
+                    action,
+                } => apply_viewport_close_plan(ctx, action_to_viewport_plan(action)),
+                _ => {}
+            }
+        }
+        had_events
+    }
 }
 
 fn load_cjk_font_bytes() -> Option<(String, Vec<u8>)> {
@@ -559,8 +518,13 @@ fn load_cjk_font_bytes() -> Option<(String, Vec<u8>)> {
 
 impl eframe::App for SignalDeskApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let had_events = self.drain_poller_events();
         self.apply_window_mode(ctx);
+        if ctx.input(|i| i.viewport().close_requested()) {
+            let _ = self
+                .runtime_handle
+                .send(crate::core::contract::AppCommand::RequestCloseMainWindow);
+        }
+        let had_runtime_events = self.drain_runtime_events(ctx);
         let now_ms = chrono::Utc::now().timestamp_millis();
         let mut trigger_hovered = false;
 
@@ -571,7 +535,9 @@ impl eframe::App for SignalDeskApp {
                     .changed();
 
                 if ui.button("立即轮询").clicked() {
-                    let _ = self.poller.command_tx.send(PollerCommand::ForcePoll);
+                    let _ = self
+                        .runtime_handle
+                        .send(crate::core::contract::AppCommand::ForcePoll);
                 }
                 if ui.button("保存配置").clicked() {
                     self.save_config();
@@ -659,7 +625,7 @@ impl eframe::App for SignalDeskApp {
         }
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            let poll_text = match self.last_poll_ms {
+            let poll_text = match self.snapshot.last_poll_ms {
                 Some(ts) => format!(
                     "last poll: {} ({})",
                     format_trigger_time_local(ts),
@@ -668,12 +634,13 @@ impl eframe::App for SignalDeskApp {
                 None => "last poll: never".to_string(),
             };
             let meta = self
+                .snapshot
                 .last_meta
                 .map(|(total, page, page_size)| {
                     format!("total={total}, page={page}, pageSize={page_size}")
                 })
                 .unwrap_or_else(|| "total=0".to_string());
-            let (poll_state_color, poll_state_text) = match self.last_poll_ok {
+            let (poll_state_color, poll_state_text) = match self.snapshot.last_poll_ok {
                 Some(true) => (Color32::from_rgb(48, 181, 122), "轮询正常"),
                 Some(false) => (Color32::from_rgb(214, 84, 105), "上次轮询失败"),
                 None => (Color32::LIGHT_GRAY, "尚未轮询"),
@@ -685,7 +652,11 @@ impl eframe::App for SignalDeskApp {
                 ui.small(poll_text);
                 ui.separator();
                 ui.small(meta);
-                if let Some(err) = &self.last_error {
+                if let Some(err) = self
+                    .local_error
+                    .as_ref()
+                    .or(self.snapshot.last_error.as_ref())
+                {
                     ui.separator();
                     ui.colored_label(Color32::from_rgb(255, 120, 120), err);
                 }
@@ -694,7 +665,7 @@ impl eframe::App for SignalDeskApp {
 
         if self.hover_panel.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
-        } else if had_events {
+        } else if had_runtime_events {
             ctx.request_repaint();
         }
     }
@@ -823,43 +794,60 @@ fn period_has_unread(
         );
         signals
             .get(&key)
-            .is_some_and(|signal| !signal.read && !pending_read.contains(&key))
+        .is_some_and(|signal| !signal.read && !pending_read.contains(&key))
     })
 }
 
-fn effective_unread_keys(
-    signals: &HashMap<SignalKey, SignalState>,
-    pending_read: &HashSet<SignalKey>,
-) -> HashSet<SignalKey> {
-    signals
-        .iter()
-        .filter(|(key, state)| !state.read && !pending_read.contains(*key))
-        .map(|(key, _)| key.clone())
-        .collect()
+fn action_to_viewport_plan(action: UiAction) -> ViewportClosePlan {
+    match action {
+        UiAction::ShowMainWindow => ViewportClosePlan::Show,
+        UiAction::HideMainWindowToTray => ViewportClosePlan::MinimizeToTray,
+        UiAction::ExitProcess => ViewportClosePlan::Close,
+    }
 }
 
-fn collect_new_unread_keys(
-    previous_unread: &HashSet<SignalKey>,
-    current_unread: &HashSet<SignalKey>,
-) -> Vec<SignalKey> {
-    let mut keys: Vec<SignalKey> = current_unread
-        .difference(previous_unread)
-        .cloned()
-        .collect();
-    keys.sort_by(|a, b| {
-        a.symbol
-            .cmp(&b.symbol)
-            .then(a.period.cmp(&b.period))
-            .then(a.signal_type.cmp(&b.signal_type))
-    });
-    keys
+fn apply_viewport_close_plan(ctx: &egui::Context, plan: ViewportClosePlan) {
+    match plan {
+        ViewportClosePlan::Show => {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        ViewportClosePlan::Close => {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        ViewportClosePlan::MinimizeToTray => {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::GroupConfig;
+    use crate::core::queries::unread::collect_new_unread_keys;
     use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn action_to_viewport_plan_maps_close_app_to_close() {
+        let plan = action_to_viewport_plan(UiAction::ExitProcess);
+        assert_eq!(plan, ViewportClosePlan::Close);
+    }
+
+    #[test]
+    fn action_to_viewport_plan_maps_minimize_to_tray_to_minimize_plan() {
+        let plan = action_to_viewport_plan(UiAction::HideMainWindowToTray);
+        assert_eq!(plan, ViewportClosePlan::MinimizeToTray);
+    }
+
+    #[test]
+    fn action_to_viewport_plan_maps_show_to_show_plan() {
+        let plan = action_to_viewport_plan(UiAction::ShowMainWindow);
+        assert_eq!(plan, ViewportClosePlan::Show);
+    }
 
     #[test]
     fn period_label_visual_marks_unread_level() {
@@ -938,44 +926,6 @@ mod tests {
 
         let keys = collect_new_unread_keys(&previous, &current);
         assert_eq!(keys, vec![new_key]);
-    }
-
-    #[test]
-    fn effective_unread_keys_filters_read_and_pending() {
-        let key_unread = SignalKey::new("BTCUSDT", "15", "vegas");
-        let key_read = SignalKey::new("ETHUSDT", "15", "vegas");
-        let key_pending = SignalKey::new("SOLUSDT", "15", "vegas");
-
-        let signals = HashMap::from([
-            (
-                key_unread.clone(),
-                SignalState {
-                    sd: 1,
-                    t: 100,
-                    read: false,
-                },
-            ),
-            (
-                key_read,
-                SignalState {
-                    sd: -1,
-                    t: 100,
-                    read: true,
-                },
-            ),
-            (
-                key_pending.clone(),
-                SignalState {
-                    sd: 1,
-                    t: 100,
-                    read: false,
-                },
-            ),
-        ]);
-        let pending = HashSet::from([key_pending]);
-
-        let unread = effective_unread_keys(&signals, &pending);
-        assert_eq!(unread, HashSet::from([key_unread]));
     }
 
     #[test]
