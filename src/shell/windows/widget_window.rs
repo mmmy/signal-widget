@@ -15,7 +15,7 @@ use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, DefWindowProcW, FindWindowW, GetClientRect, GetCursorPos,
-    GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, GWLP_WNDPROC, HTCAPTION,
+    GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, GWLP_WNDPROC, HTCLIENT,
     HTTRANSPARENT, WM_NCDESTROY, WM_NCHITTEST, WS_EX_LAYERED, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW,
 };
@@ -54,7 +54,7 @@ pub fn clear_widget_state(hwnd: isize) {
 pub fn hit_zone_to_lresult(zone: WidgetHitZone) -> isize {
     match zone {
         WidgetHitZone::Transparent => HTTRANSPARENT as isize,
-        WidgetHitZone::Drag => HTCAPTION as isize,
+        WidgetHitZone::Drag => HTCLIENT as isize,
     }
 }
 
@@ -209,7 +209,7 @@ mod tests {
         );
         assert_eq!(
             hit_zone_to_lresult(WidgetHitZone::Drag),
-            windows_sys::Win32::UI::WindowsAndMessaging::HTCAPTION as isize
+            windows_sys::Win32::UI::WindowsAndMessaging::HTCLIENT as isize
         );
     }
 }
