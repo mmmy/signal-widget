@@ -5,13 +5,13 @@ use std::time::Duration;
 
 use chrono::TimeZone;
 use eframe::egui::{self, Color32};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::alerts::AlertEngine;
 use crate::api::SignalState;
 use crate::config::{AppConfig, GroupConfig};
-use crate::core::contract::{AppEvent, AppSnapshot, ShellCommand, WindowId};
+use crate::core::contract::AppSnapshot;
 use crate::core::queries::unread::{collect_new_unread_keys, effective_unread_keys};
 use crate::core::runtime::{Runtime, RuntimeHandle};
 use crate::domain::{compare_period_desc, period_to_millis, Side, SignalKey};
@@ -63,8 +63,7 @@ pub struct SignalDeskApp {
     // Keep the runtime alive for the lifetime of the app.
     _runtime: Runtime,
     runtime_handle: RuntimeHandle,
-    runtime_event_rx: broadcast::Receiver<AppEvent>,
-    _runtime_snapshot_rx: watch::Receiver<AppSnapshot>,
+    runtime_snapshot_rx: watch::Receiver<AppSnapshot>,
     native_close_in_progress: bool,
 }
 
@@ -104,7 +103,6 @@ impl SignalDeskApp {
         main_window: MainWindowController,
         runtime: Runtime,
         runtime_handle: RuntimeHandle,
-        runtime_event_rx: broadcast::Receiver<AppEvent>,
         runtime_snapshot_rx: watch::Receiver<AppSnapshot>,
     ) -> Self {
         let _ = runtime_handle.send(crate::core::contract::AppCommand::ForcePoll);
@@ -122,8 +120,7 @@ impl SignalDeskApp {
             local_error: None,
             _runtime: runtime,
             runtime_handle,
-            runtime_event_rx,
-            _runtime_snapshot_rx: runtime_snapshot_rx,
+            runtime_snapshot_rx,
             native_close_in_progress: false,
         }
     }
@@ -473,50 +470,58 @@ impl SignalDeskApp {
         popover.inner || popover.response.hovered()
     }
 
-    fn drain_runtime_events(&mut self, ctx: &egui::Context) -> bool {
-        let mut had_events = false;
+    fn drain_runtime_snapshot(&mut self) -> bool {
+        let mut had_snapshot = false;
         loop {
-            match self.runtime_event_rx.try_recv() {
-                Ok(event) => {
-                    had_events = true;
-                    match event {
-                        AppEvent::SnapshotUpdated(snapshot) => {
-                            let previous_unread = effective_unread_keys(
-                                &self.snapshot.signals,
-                                &self.snapshot.pending_read,
-                            );
-                            let current_unread =
-                                effective_unread_keys(&snapshot.signals, &snapshot.pending_read);
-
-                            if self.has_seen_snapshot {
-                                let new_unread =
-                                    collect_new_unread_keys(&previous_unread, &current_unread);
-                                self.alerts.on_new_unread(
-                                    chrono::Utc::now().timestamp_millis(),
-                                    &new_unread,
-                                    self.config.ui.notifications,
-                                    self.config.ui.sound,
-                                );
-                            } else {
-                                self.has_seen_snapshot = true;
-                            }
-                            self.snapshot = snapshot;
-                        }
-                        AppEvent::ShellCommand(command) => {
-                            apply_shell_command(ctx, &self.main_window, command);
-                        }
-                        _ => {}
-                    }
+            match self.runtime_snapshot_rx.has_changed() {
+                Ok(true) => {
+                    let snapshot = self.runtime_snapshot_rx.borrow_and_update().clone();
+                    had_snapshot = apply_runtime_snapshot_update(
+                        &mut self.snapshot,
+                        &mut self.has_seen_snapshot,
+                        &mut self.alerts,
+                        self.config.ui.notifications,
+                        self.config.ui.sound,
+                        snapshot,
+                        chrono::Utc::now().timestamp_millis(),
+                    ) || had_snapshot;
                 }
-                Err(broadcast::error::TryRecvError::Empty) => break,
-                Err(broadcast::error::TryRecvError::Closed) => break,
-                Err(broadcast::error::TryRecvError::Lagged(_)) => {
-                    had_events = true;
-                }
+                Ok(false) => break,
+                Err(_) => break,
             }
         }
-        had_events
+        had_snapshot
     }
+}
+
+fn apply_runtime_snapshot_update(
+    current_snapshot: &mut AppSnapshot,
+    has_seen_snapshot: &mut bool,
+    alerts: &mut AlertEngine,
+    notifications_enabled: bool,
+    sound_enabled: bool,
+    next_snapshot: AppSnapshot,
+    now_ms: i64,
+) -> bool {
+    let previous_unread =
+        effective_unread_keys(&current_snapshot.signals, &current_snapshot.pending_read);
+    let current_unread =
+        effective_unread_keys(&next_snapshot.signals, &next_snapshot.pending_read);
+
+    if *has_seen_snapshot {
+        let new_unread = collect_new_unread_keys(&previous_unread, &current_unread);
+        alerts.on_new_unread(
+            now_ms,
+            &new_unread,
+            notifications_enabled,
+            sound_enabled,
+        );
+    } else {
+        *has_seen_snapshot = true;
+    }
+
+    *current_snapshot = next_snapshot;
+    true
 }
 
 fn load_cjk_font_bytes() -> Option<(String, Vec<u8>)> {
@@ -574,7 +579,7 @@ impl eframe::App for SignalDeskApp {
             }
             None => {}
         }
-        let had_runtime_events = self.drain_runtime_events(ctx);
+        let had_runtime_events = self.drain_runtime_snapshot();
         let now_ms = chrono::Utc::now().timestamp_millis();
         let mut trigger_hovered = false;
 
@@ -883,27 +888,6 @@ fn close_request_interception_with_progress(
     }
 }
 
-fn apply_shell_command(
-    ctx: &egui::Context,
-    main_window: &MainWindowController,
-    command: ShellCommand,
-) {
-    match command {
-        ShellCommand::ShowWindow(WindowId::Main) | ShellCommand::FocusWindow(WindowId::Main) => {
-            main_window.show();
-            ctx.request_repaint();
-        }
-        ShellCommand::ExitProcess => {
-            main_window.request_exit();
-        }
-        ShellCommand::HideWindow(WindowId::Main) => {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            main_window.hide_to_tray();
-        }
-        _ => {}
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1086,5 +1070,31 @@ mod tests {
     fn format_elapsed_since_local_shows_minutes() {
         let text = format_elapsed_since_local(100_000, 280_000);
         assert_eq!(text, "3 分钟前");
+    }
+
+    #[test]
+    fn apply_runtime_snapshot_update_replaces_snapshot_from_watch_state() {
+        let mut current = AppSnapshot::default();
+        let mut has_seen_snapshot = false;
+        let mut alerts = AlertEngine::default();
+        let next = AppSnapshot {
+            unread_count: 3,
+            last_poll_ms: Some(42),
+            ..Default::default()
+        };
+
+        let changed = apply_runtime_snapshot_update(
+            &mut current,
+            &mut has_seen_snapshot,
+            &mut alerts,
+            false,
+            false,
+            next.clone(),
+            1_000,
+        );
+
+        assert!(changed);
+        assert_eq!(current, next);
+        assert!(has_seen_snapshot);
     }
 }

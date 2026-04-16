@@ -17,7 +17,7 @@ pub struct AppSnapshot {
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WindowId {
     Main,
     Widget,

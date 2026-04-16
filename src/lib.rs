@@ -12,14 +12,17 @@ pub mod unread_panel;
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::thread;
 
 use tracing::Level;
+use tokio::sync::broadcast;
 use winit::raw_window_handle::HasWindowHandle;
 
 use crate::adapters::tray::TrayAdapter;
 use crate::api::ApiClient;
 use crate::app::{setup_chinese_fonts, SignalDeskApp};
 use crate::config::AppConfig;
+use crate::core::contract::{AppEvent, ShellCommand, WindowId};
 use crate::core::runtime::Runtime;
 use crate::poller::PollerHandle;
 use crate::shell::MainWindowController;
@@ -35,6 +38,63 @@ fn build_native_options() -> eframe::NativeOptions {
         run_and_return: false,
         ..Default::default()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MainWindowShellEffect {
+    Show,
+    Hide,
+    Exit,
+}
+
+fn main_window_shell_effect(command: &ShellCommand) -> Option<MainWindowShellEffect> {
+    match command {
+        ShellCommand::ShowWindow(WindowId::Main) | ShellCommand::FocusWindow(WindowId::Main) => {
+            Some(MainWindowShellEffect::Show)
+        }
+        ShellCommand::HideWindow(WindowId::Main) => Some(MainWindowShellEffect::Hide),
+        ShellCommand::ExitProcess => Some(MainWindowShellEffect::Exit),
+        _ => None,
+    }
+}
+
+fn apply_main_window_shell_effect(
+    ctx: &eframe::egui::Context,
+    main_window: &MainWindowController,
+    effect: MainWindowShellEffect,
+) {
+    match effect {
+        MainWindowShellEffect::Show => {
+            main_window.show();
+            ctx.request_repaint();
+        }
+        MainWindowShellEffect::Hide => {
+            ctx.send_viewport_cmd(eframe::egui::ViewportCommand::CancelClose);
+            main_window.hide_to_tray();
+        }
+        MainWindowShellEffect::Exit => {
+            main_window.request_exit();
+        }
+    }
+}
+
+fn spawn_main_window_shell_pump(
+    ctx: eframe::egui::Context,
+    main_window: MainWindowController,
+    mut event_rx: broadcast::Receiver<AppEvent>,
+) {
+    thread::spawn(move || loop {
+        match event_rx.blocking_recv() {
+            Ok(AppEvent::ShellCommand(command)) => {
+                if let Some(effect) = main_window_shell_effect(&command) {
+                    apply_main_window_shell_effect(&ctx, &main_window, effect);
+                }
+            }
+            Ok(_) => {}
+            Err(broadcast::error::RecvError::Closed) => break,
+            Err(broadcast::error::RecvError::Lagged(_)) => {}
+        }
+    });
 }
 
 pub fn run() {
@@ -71,6 +131,11 @@ pub fn run() {
             let runtime_snapshot_rx = runtime_handle.subscribe_snapshot();
             let main_window =
                 MainWindowController::from_raw_window_handle(cc.window_handle()?.as_raw())?;
+            spawn_main_window_shell_pump(
+                cc.egui_ctx.clone(),
+                main_window.clone(),
+                runtime_event_rx,
+            );
             let tray_adapter = match TrayAdapter::new(main_window.clone(), cc.egui_ctx.clone()) {
                 Ok(adapter) => Some(adapter),
                 Err(_err) => None,
@@ -90,7 +155,6 @@ pub fn run() {
                     .take()
                     .expect("runtime initialized once"),
                 runtime_handle,
-                runtime_event_rx,
                 runtime_snapshot_rx,
             )))
         }),
@@ -111,7 +175,7 @@ fn init_tracing() {
 
 #[cfg(test)]
 mod integration_contract_tests {
-    use crate::core::contract::AppCommand;
+    use crate::core::contract::{AppCommand, ShellCommand, WindowId};
 
     #[test]
     fn command_contract_exposes_force_poll() {
@@ -126,5 +190,41 @@ mod integration_contract_tests {
     fn native_options_keep_event_loop_running_for_tray_actions() {
         let options = super::build_native_options();
         assert!(!options.run_and_return);
+    }
+
+    #[test]
+    fn main_window_shell_effect_maps_main_window_commands() {
+        assert_eq!(
+            super::main_window_shell_effect(&ShellCommand::ShowWindow(WindowId::Main)),
+            Some(super::MainWindowShellEffect::Show)
+        );
+        assert_eq!(
+            super::main_window_shell_effect(&ShellCommand::FocusWindow(WindowId::Main)),
+            Some(super::MainWindowShellEffect::Show)
+        );
+        assert_eq!(
+            super::main_window_shell_effect(&ShellCommand::HideWindow(WindowId::Main)),
+            Some(super::MainWindowShellEffect::Hide)
+        );
+        assert_eq!(
+            super::main_window_shell_effect(&ShellCommand::ExitProcess),
+            Some(super::MainWindowShellEffect::Exit)
+        );
+    }
+
+    #[test]
+    fn main_window_shell_effect_ignores_non_main_window_commands() {
+        assert_eq!(
+            super::main_window_shell_effect(&ShellCommand::ShowWindow(WindowId::Widget)),
+            None
+        );
+        assert_eq!(
+            super::main_window_shell_effect(&ShellCommand::HideWindow(WindowId::Widget)),
+            None
+        );
+        assert_eq!(
+            super::main_window_shell_effect(&ShellCommand::FocusWindow(WindowId::Widget)),
+            None
+        );
     }
 }
