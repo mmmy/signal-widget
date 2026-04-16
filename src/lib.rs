@@ -3,6 +3,7 @@ pub mod alerts;
 pub mod api;
 pub mod app;
 pub mod config;
+pub mod config_store;
 pub mod core;
 pub mod domain;
 pub mod poller;
