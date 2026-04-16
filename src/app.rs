@@ -172,7 +172,11 @@ impl SignalDeskApp {
     }
 
     fn total_unread_count(&self) -> usize {
-        self.snapshot.unread_count
+        filtered_total_unread_count(
+            &self.config.groups,
+            &self.snapshot.signals,
+            &self.snapshot.pending_read,
+        )
     }
 
     fn mark_group_read(&mut self, group: &GroupConfig) {
@@ -798,6 +802,14 @@ fn period_has_unread(
     })
 }
 
+fn filtered_total_unread_count(
+    groups: &[GroupConfig],
+    signals: &HashMap<SignalKey, SignalState>,
+    pending_read: &HashSet<SignalKey>,
+) -> usize {
+    build_unread_items(groups, signals, pending_read, &HoverPanelTarget::Global).len()
+}
+
 fn action_to_viewport_plan(action: UiAction) -> ViewportClosePlan {
     match action {
         UiAction::ShowMainWindow => ViewportClosePlan::Show,
@@ -926,6 +938,65 @@ mod tests {
 
         let keys = collect_new_unread_keys(&previous, &current);
         assert_eq!(keys, vec![new_key]);
+    }
+
+    #[test]
+    fn filtered_total_unread_count_only_counts_configured_group_signals() {
+        let groups = vec![
+            GroupConfig {
+                id: "g1".to_string(),
+                name: "BTC Main".to_string(),
+                symbol: "BTCUSDT".to_string(),
+                periods: vec!["15".to_string()],
+                signal_types: vec!["divMacd".to_string()],
+                enabled: true,
+            },
+            GroupConfig {
+                id: "g2".to_string(),
+                name: "ETH Main".to_string(),
+                symbol: "ETHUSDT".to_string(),
+                periods: vec!["15".to_string()],
+                signal_types: vec!["vegas".to_string()],
+                enabled: true,
+            },
+        ];
+        let signals = HashMap::from([
+            (
+                SignalKey::new("BTCUSDT", "15", "divMacd"),
+                SignalState {
+                    sd: 1,
+                    t: 100,
+                    read: true,
+                },
+            ),
+            (
+                SignalKey::new("BTCUSDT", "15", "vegas"),
+                SignalState {
+                    sd: 1,
+                    t: 100,
+                    read: false,
+                },
+            ),
+            (
+                SignalKey::new("ETHUSDT", "15", "divMacd"),
+                SignalState {
+                    sd: 1,
+                    t: 100,
+                    read: false,
+                },
+            ),
+            (
+                SignalKey::new("ETHUSDT", "15", "vegas"),
+                SignalState {
+                    sd: 1,
+                    t: 100,
+                    read: false,
+                },
+            ),
+        ]);
+
+        let total = filtered_total_unread_count(&groups, &signals, &HashSet::new());
+        assert_eq!(total, 1);
     }
 
     #[test]
