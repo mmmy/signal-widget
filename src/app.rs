@@ -530,8 +530,9 @@ fn load_cjk_font_bytes() -> Option<(String, Vec<u8>)> {
 impl eframe::App for SignalDeskApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.apply_window_mode(ctx);
+        let close_requested = ctx.input(|i| i.viewport().close_requested());
         match close_request_interception_with_progress(
-            ctx.input(|i| i.viewport().close_requested()),
+            close_requested,
             self.main_window.allow_native_close(),
             self.native_close_in_progress,
         ) {

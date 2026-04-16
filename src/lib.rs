@@ -23,6 +23,19 @@ use crate::core::runtime::Runtime;
 use crate::poller::PollerHandle;
 use crate::shell::MainWindowController;
 
+fn build_native_options() -> eframe::NativeOptions {
+    eframe::NativeOptions {
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_title("Signal Desk")
+            .with_inner_size([540.0, 760.0])
+            .with_min_inner_size([220.0, 360.0]),
+        // Keep the event loop active while the main window is hidden so
+        // tray/menu actions still get processed on Windows.
+        run_and_return: false,
+        ..Default::default()
+    }
+}
+
 pub fn run() {
     let (config, config_path) = match AppConfig::load_or_create() {
         Ok(data) => data,
@@ -34,13 +47,7 @@ pub fn run() {
     init_tracing();
     println!("using config: {}", config_path.display());
 
-    let native_options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("Signal Desk")
-            .with_inner_size([540.0, 760.0])
-            .with_min_inner_size([220.0, 360.0]),
-        ..Default::default()
-    };
+    let native_options = build_native_options();
 
     let runtime_holder = Rc::new(RefCell::new(None));
     let tray_holder = Rc::new(RefCell::new(None));
@@ -62,7 +69,7 @@ pub fn run() {
                 );
             let main_window =
                 MainWindowController::from_raw_window_handle(cc.window_handle()?.as_raw())?;
-            let tray_adapter = match TrayAdapter::new(main_window.clone()) {
+            let tray_adapter = match TrayAdapter::new(main_window.clone(), cc.egui_ctx.clone()) {
                 Ok(adapter) => Some(adapter),
                 Err(_err) => None,
             };
@@ -110,5 +117,11 @@ mod integration_contract_tests {
             AppCommand::ForcePoll => {}
             _ => panic!("unexpected command"),
         }
+    }
+
+    #[test]
+    fn native_options_keep_event_loop_running_for_tray_actions() {
+        let options = super::build_native_options();
+        assert!(!options.run_and_return);
     }
 }

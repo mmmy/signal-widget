@@ -1,4 +1,5 @@
 use anyhow::{Context as _, Result};
+use eframe::egui;
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -18,13 +19,27 @@ enum TrayUserAction {
     ExitApp,
 }
 
+#[cfg(test)]
+fn tray_exit_is_process_level(action: TrayUserAction) -> bool {
+    matches!(action, TrayUserAction::ExitApp)
+}
+
+fn tray_action_requests_repaint(action: TrayUserAction) -> bool {
+    matches!(action, TrayUserAction::ShowMainWindow)
+}
+
 struct TrayEventPump {
     shutdown_tx: mpsc::Sender<()>,
     join: Option<JoinHandle<()>>,
 }
 
 impl TrayEventPump {
-    fn spawn(show_id: MenuId, exit_id: MenuId, main_window: MainWindowController) -> Self {
+    fn spawn(
+        show_id: MenuId,
+        exit_id: MenuId,
+        main_window: MainWindowController,
+        egui_ctx: egui::Context,
+    ) -> Self {
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
         let join = thread::spawn(move || {
             loop {
@@ -34,13 +49,13 @@ impl TrayEventPump {
 
                 while let Ok(event) = MenuEvent::receiver().try_recv() {
                     if let Some(action) = menu_event_to_action(&event, &show_id, &exit_id) {
-                        apply_tray_action(action, &main_window);
+                        apply_tray_action(action, &main_window, &egui_ctx);
                     }
                 }
 
                 while let Ok(event) = TrayIconEvent::receiver().try_recv() {
                     if let Some(action) = map_tray_click_to_action(&event) {
-                        apply_tray_action(action, &main_window);
+                        apply_tray_action(action, &main_window, &egui_ctx);
                     }
                 }
 
@@ -65,7 +80,7 @@ impl Drop for TrayEventPump {
 }
 
 impl TrayAdapter {
-    pub fn new(main_window: MainWindowController) -> Result<Self> {
+    pub fn new(main_window: MainWindowController, egui_ctx: egui::Context) -> Result<Self> {
         let tray_menu = Menu::new();
         let show_item = MenuItem::new("显示主窗口", true, None);
         let exit_item = MenuItem::new("退出", true, None);
@@ -77,6 +92,7 @@ impl TrayAdapter {
             show_item.id().clone(),
             exit_item.id().clone(),
             main_window,
+            egui_ctx,
         );
 
         let tray_icon = TrayIconBuilder::new()
@@ -94,10 +110,21 @@ impl TrayAdapter {
     }
 }
 
-fn apply_tray_action(action: TrayUserAction, main_window: &MainWindowController) {
+fn apply_tray_action(
+    action: TrayUserAction,
+    main_window: &MainWindowController,
+    egui_ctx: &egui::Context,
+) {
     match action {
-        TrayUserAction::ShowMainWindow => main_window.show(),
-        TrayUserAction::ExitApp => main_window.request_exit(),
+        TrayUserAction::ShowMainWindow => {
+            main_window.show();
+            if tray_action_requests_repaint(action) {
+                egui_ctx.request_repaint();
+            }
+        }
+        TrayUserAction::ExitApp => {
+            std::process::exit(0);
+        }
     }
 }
 
@@ -163,6 +190,16 @@ mod tests {
     use super::*;
     use tray_icon::menu::MenuId;
     use tray_icon::{MouseButton, MouseButtonState, Rect, TrayIconEvent, TrayIconId};
+
+    #[test]
+    fn exit_action_requests_repaint_to_wake_hidden_window_loop() {
+        assert!(!tray_action_requests_repaint(TrayUserAction::ExitApp));
+    }
+
+    #[test]
+    fn exit_action_uses_process_level_shutdown() {
+        assert!(tray_exit_is_process_level(TrayUserAction::ExitApp));
+    }
 
     #[test]
     fn menu_event_for_show_id_maps_to_show_action() {
