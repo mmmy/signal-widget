@@ -99,4 +99,31 @@ mod tests {
         assert_eq!(reloaded.ui.widget.x, 180.0);
         assert_eq!(reloaded.ui.widget.y, 220.0);
     }
+
+    #[test]
+    fn update_ui_keeps_snapshot_unchanged_when_persistence_fails() {
+        let path = std::env::temp_dir().join(format!(
+            "signal-desk-widget-plan-update-failure-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path).expect("create temp dir");
+
+        let store = ConfigStore::new_for_test(crate::config::AppConfig::default(), path.clone());
+        let before = store.snapshot();
+
+        let result = store.update_ui(|ui| {
+            ui.widget.x = 180.0;
+            ui.widget.y = 220.0;
+        });
+
+        assert!(result.is_err());
+        assert_eq!(store.snapshot().ui.widget.x, before.ui.widget.x);
+        assert_eq!(store.snapshot().ui.widget.y, before.ui.widget.y);
+
+        std::fs::remove_dir_all(path).expect("clean up temp dir");
+    }
 }
