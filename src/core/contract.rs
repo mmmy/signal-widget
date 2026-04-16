@@ -18,10 +18,17 @@ pub struct AppSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdapterId {
-    MainWindow,
-    Tray,
-    FloatingWidget,
+pub enum WindowId {
+    Main,
+    Widget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShellCommand {
+    ShowWindow(WindowId),
+    HideWindow(WindowId),
+    FocusWindow(WindowId),
+    ExitProcess,
 }
 
 #[derive(Debug, Clone)]
@@ -33,13 +40,8 @@ pub enum AppCommand {
     RequestCloseMainWindow,
     RequestShowMainWindow,
     RequestExitApp,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UiAction {
-    ShowMainWindow,
-    HideMainWindowToTray,
-    ExitProcess,
+    RequestShowWidget,
+    RequestHideWidget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,7 +61,8 @@ pub enum AppEvent {
         key: SignalKey,
         error: String,
     },
-    AdapterAction { target: AdapterId, action: UiAction },
+    WidgetVisibilityChanged { visible: bool },
+    ShellCommand(ShellCommand),
 }
 
 #[cfg(test)]

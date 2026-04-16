@@ -62,12 +62,13 @@ pub fn run() {
             setup_chinese_fonts(&cc.egui_ctx);
             let api_client = ApiClient::new(&config.api);
             let mut poller = PollerHandle::spawn(api_client, config.clone(), cc.egui_ctx.clone());
-            let (runtime, runtime_handle, runtime_event_rx) =
-                Runtime::spawn(
-                    cc.egui_ctx.clone(),
-                    poller.command_tx.clone(),
-                    poller.take_event_rx(),
-                );
+            let (runtime, runtime_handle) = Runtime::spawn(
+                cc.egui_ctx.clone(),
+                poller.command_tx.clone(),
+                poller.take_event_rx(),
+            );
+            let runtime_event_rx = runtime_handle.subscribe_events();
+            let runtime_snapshot_rx = runtime_handle.subscribe_snapshot();
             let main_window =
                 MainWindowController::from_raw_window_handle(cc.window_handle()?.as_raw())?;
             let tray_adapter = match TrayAdapter::new(main_window.clone(), cc.egui_ctx.clone()) {
@@ -90,6 +91,7 @@ pub fn run() {
                     .expect("runtime initialized once"),
                 runtime_handle,
                 runtime_event_rx,
+                runtime_snapshot_rx,
             )))
         }),
     );

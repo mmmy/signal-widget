@@ -5,12 +5,13 @@ use std::time::Duration;
 
 use chrono::TimeZone;
 use eframe::egui::{self, Color32};
+use tokio::sync::{broadcast, watch};
 use tracing::{info, warn};
 
 use crate::alerts::AlertEngine;
 use crate::api::SignalState;
 use crate::config::{AppConfig, GroupConfig};
-use crate::core::contract::{AdapterId, AppEvent, AppSnapshot, UiAction};
+use crate::core::contract::{AppEvent, AppSnapshot, ShellCommand, WindowId};
 use crate::core::queries::unread::{collect_new_unread_keys, effective_unread_keys};
 use crate::core::runtime::{Runtime, RuntimeHandle};
 use crate::domain::{compare_period_desc, period_to_millis, Side, SignalKey};
@@ -62,7 +63,8 @@ pub struct SignalDeskApp {
     // Keep the runtime alive for the lifetime of the app.
     _runtime: Runtime,
     runtime_handle: RuntimeHandle,
-    runtime_event_rx: std::sync::mpsc::Receiver<AppEvent>,
+    runtime_event_rx: broadcast::Receiver<AppEvent>,
+    _runtime_snapshot_rx: watch::Receiver<AppSnapshot>,
     native_close_in_progress: bool,
 }
 
@@ -102,7 +104,8 @@ impl SignalDeskApp {
         main_window: MainWindowController,
         runtime: Runtime,
         runtime_handle: RuntimeHandle,
-        runtime_event_rx: std::sync::mpsc::Receiver<AppEvent>,
+        runtime_event_rx: broadcast::Receiver<AppEvent>,
+        runtime_snapshot_rx: watch::Receiver<AppSnapshot>,
     ) -> Self {
         let _ = runtime_handle.send(crate::core::contract::AppCommand::ForcePoll);
         Self {
@@ -120,6 +123,7 @@ impl SignalDeskApp {
             _runtime: runtime,
             runtime_handle,
             runtime_event_rx,
+            _runtime_snapshot_rx: runtime_snapshot_rx,
             native_close_in_progress: false,
         }
     }
@@ -471,33 +475,44 @@ impl SignalDeskApp {
 
     fn drain_runtime_events(&mut self, ctx: &egui::Context) -> bool {
         let mut had_events = false;
-        while let Ok(event) = self.runtime_event_rx.try_recv() {
-            had_events = true;
-            match event {
-                AppEvent::SnapshotUpdated(snapshot) => {
-                    let previous_unread =
-                        effective_unread_keys(&self.snapshot.signals, &self.snapshot.pending_read);
-                    let current_unread =
-                        effective_unread_keys(&snapshot.signals, &snapshot.pending_read);
+        loop {
+            match self.runtime_event_rx.try_recv() {
+                Ok(event) => {
+                    had_events = true;
+                    match event {
+                        AppEvent::SnapshotUpdated(snapshot) => {
+                            let previous_unread = effective_unread_keys(
+                                &self.snapshot.signals,
+                                &self.snapshot.pending_read,
+                            );
+                            let current_unread =
+                                effective_unread_keys(&snapshot.signals, &snapshot.pending_read);
 
-                    if self.has_seen_snapshot {
-                        let new_unread = collect_new_unread_keys(&previous_unread, &current_unread);
-                        self.alerts.on_new_unread(
-                            chrono::Utc::now().timestamp_millis(),
-                            &new_unread,
-                            self.config.ui.notifications,
-                            self.config.ui.sound,
-                        );
-                    } else {
-                        self.has_seen_snapshot = true;
+                            if self.has_seen_snapshot {
+                                let new_unread =
+                                    collect_new_unread_keys(&previous_unread, &current_unread);
+                                self.alerts.on_new_unread(
+                                    chrono::Utc::now().timestamp_millis(),
+                                    &new_unread,
+                                    self.config.ui.notifications,
+                                    self.config.ui.sound,
+                                );
+                            } else {
+                                self.has_seen_snapshot = true;
+                            }
+                            self.snapshot = snapshot;
+                        }
+                        AppEvent::ShellCommand(command) => {
+                            apply_shell_command(ctx, &self.main_window, command);
+                        }
+                        _ => {}
                     }
-                    self.snapshot = snapshot;
                 }
-                AppEvent::AdapterAction {
-                    target: AdapterId::MainWindow,
-                    action,
-                } => apply_ui_action(ctx, &self.main_window, action),
-                _ => {}
+                Err(broadcast::error::TryRecvError::Empty) => break,
+                Err(broadcast::error::TryRecvError::Closed) => break,
+                Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                    had_events = true;
+                }
             }
         }
         had_events
@@ -868,19 +883,24 @@ fn close_request_interception_with_progress(
     }
 }
 
-fn apply_ui_action(ctx: &egui::Context, main_window: &MainWindowController, action: UiAction) {
-    match action {
-        UiAction::ShowMainWindow => {
+fn apply_shell_command(
+    ctx: &egui::Context,
+    main_window: &MainWindowController,
+    command: ShellCommand,
+) {
+    match command {
+        ShellCommand::ShowWindow(WindowId::Main) | ShellCommand::FocusWindow(WindowId::Main) => {
             main_window.show();
             ctx.request_repaint();
         }
-        UiAction::ExitProcess => {
+        ShellCommand::ExitProcess => {
             main_window.request_exit();
         }
-        UiAction::HideMainWindowToTray => {
+        ShellCommand::HideWindow(WindowId::Main) => {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             main_window.hide_to_tray();
         }
+        _ => {}
     }
 }
 
