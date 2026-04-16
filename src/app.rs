@@ -15,6 +15,7 @@ use crate::core::queries::unread::{collect_new_unread_keys, effective_unread_key
 use crate::core::runtime::{Runtime, RuntimeHandle};
 use crate::domain::{compare_period_desc, period_to_millis, Side, SignalKey};
 use crate::poller::PollerHandle;
+use crate::shell::MainWindowController;
 use crate::unread_panel::{build_unread_items, HoverPanelState, HoverPanelTarget};
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -39,16 +40,18 @@ struct WindowModeState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ViewportClosePlan {
-    Show,
-    Close,
-    MinimizeToTray,
+enum CloseRequestInterception {
+    CancelAndDispatch,
+    AllowNativeClose,
+    ClearNativeClosePermission,
+    Noop,
 }
 
 pub struct SignalDeskApp {
     config: AppConfig,
     config_path: PathBuf,
     _poller: PollerHandle,
+    main_window: MainWindowController,
     snapshot: AppSnapshot,
     hover_panel: Option<HoverPanelState>,
     hover_anchor: Option<egui::Rect>,
@@ -60,6 +63,7 @@ pub struct SignalDeskApp {
     _runtime: Runtime,
     runtime_handle: RuntimeHandle,
     runtime_event_rx: std::sync::mpsc::Receiver<AppEvent>,
+    native_close_in_progress: bool,
 }
 
 pub fn setup_chinese_fonts(ctx: &egui::Context) {
@@ -95,6 +99,7 @@ impl SignalDeskApp {
         config: AppConfig,
         config_path: PathBuf,
         poller: PollerHandle,
+        main_window: MainWindowController,
         runtime: Runtime,
         runtime_handle: RuntimeHandle,
         runtime_event_rx: std::sync::mpsc::Receiver<AppEvent>,
@@ -104,6 +109,7 @@ impl SignalDeskApp {
             config,
             config_path,
             _poller: poller,
+            main_window,
             snapshot: AppSnapshot::default(),
             hover_panel: None,
             hover_anchor: None,
@@ -114,6 +120,7 @@ impl SignalDeskApp {
             _runtime: runtime,
             runtime_handle,
             runtime_event_rx,
+            native_close_in_progress: false,
         }
     }
 
@@ -489,7 +496,7 @@ impl SignalDeskApp {
                 AppEvent::AdapterAction {
                     target: AdapterId::MainWindow,
                     action,
-                } => apply_viewport_close_plan(ctx, action_to_viewport_plan(action)),
+                } => apply_ui_action(ctx, &self.main_window, action),
                 _ => {}
             }
         }
@@ -523,10 +530,34 @@ fn load_cjk_font_bytes() -> Option<(String, Vec<u8>)> {
 impl eframe::App for SignalDeskApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.apply_window_mode(ctx);
-        if ctx.input(|i| i.viewport().close_requested()) {
-            let _ = self
-                .runtime_handle
-                .send(crate::core::contract::AppCommand::RequestCloseMainWindow);
+        let close_requested = ctx.input(|i| i.viewport().close_requested());
+        match close_request_interception_with_progress(
+            close_requested,
+            self.main_window.allow_native_close(),
+            self.native_close_in_progress,
+        ) {
+            Some(CloseRequestInterception::CancelAndDispatch) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                if let Err(err) = self
+                    .runtime_handle
+                    .send(crate::core::contract::AppCommand::RequestCloseMainWindow)
+                {
+                    warn!("failed to dispatch close request to runtime: {}", err);
+                }
+            }
+            Some(CloseRequestInterception::AllowNativeClose) => {
+                self.native_close_in_progress = true;
+            }
+            Some(CloseRequestInterception::ClearNativeClosePermission) => {
+                self.main_window.clear_native_close_permission();
+                self.native_close_in_progress = false;
+            }
+            Some(CloseRequestInterception::Noop) => {
+                if !self.main_window.allow_native_close() {
+                    self.native_close_in_progress = false;
+                }
+            }
+            None => {}
         }
         let had_runtime_events = self.drain_runtime_events(ctx);
         let now_ms = chrono::Utc::now().timestamp_millis();
@@ -810,28 +841,45 @@ fn filtered_total_unread_count(
     build_unread_items(groups, signals, pending_read, &HoverPanelTarget::Global).len()
 }
 
-fn action_to_viewport_plan(action: UiAction) -> ViewportClosePlan {
-    match action {
-        UiAction::ShowMainWindow => ViewportClosePlan::Show,
-        UiAction::HideMainWindowToTray => ViewportClosePlan::MinimizeToTray,
-        UiAction::ExitProcess => ViewportClosePlan::Close,
+#[cfg(test)]
+fn close_request_interception(
+    close_requested: bool,
+    allow_native_close: bool,
+) -> Option<CloseRequestInterception> {
+    close_request_interception_with_progress(close_requested, allow_native_close, false)
+}
+
+fn close_request_interception_with_progress(
+    close_requested: bool,
+    allow_native_close: bool,
+    native_close_in_progress: bool,
+) -> Option<CloseRequestInterception> {
+    if !close_requested {
+        if allow_native_close && native_close_in_progress {
+            return Some(CloseRequestInterception::ClearNativeClosePermission);
+        }
+        return Some(CloseRequestInterception::Noop);
+    }
+
+    if allow_native_close {
+        Some(CloseRequestInterception::AllowNativeClose)
+    } else {
+        Some(CloseRequestInterception::CancelAndDispatch)
     }
 }
 
-fn apply_viewport_close_plan(ctx: &egui::Context, plan: ViewportClosePlan) {
-    match plan {
-        ViewportClosePlan::Show => {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+fn apply_ui_action(ctx: &egui::Context, main_window: &MainWindowController, action: UiAction) {
+    match action {
+        UiAction::ShowMainWindow => {
+            main_window.show();
+            ctx.request_repaint();
         }
-        ViewportClosePlan::Close => {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        UiAction::ExitProcess => {
+            main_window.request_exit();
         }
-        ViewportClosePlan::MinimizeToTray => {
+        UiAction::HideMainWindowToTray => {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            main_window.hide_to_tray();
         }
     }
 }
@@ -844,21 +892,30 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     #[test]
-    fn action_to_viewport_plan_maps_close_app_to_close() {
-        let plan = action_to_viewport_plan(UiAction::ExitProcess);
-        assert_eq!(plan, ViewportClosePlan::Close);
+    fn close_request_interception_cancels_close_until_runtime_decides() {
+        let plan = close_request_interception(true, false);
+        assert_eq!(plan, Some(CloseRequestInterception::CancelAndDispatch));
     }
 
     #[test]
-    fn action_to_viewport_plan_maps_minimize_to_tray_to_minimize_plan() {
-        let plan = action_to_viewport_plan(UiAction::HideMainWindowToTray);
-        assert_eq!(plan, ViewportClosePlan::MinimizeToTray);
+    fn close_request_interception_allows_native_close_after_exit_is_authorized() {
+        let plan = close_request_interception(true, true);
+        assert_eq!(plan, Some(CloseRequestInterception::AllowNativeClose));
     }
 
     #[test]
-    fn action_to_viewport_plan_maps_show_to_show_plan() {
-        let plan = action_to_viewport_plan(UiAction::ShowMainWindow);
-        assert_eq!(plan, ViewportClosePlan::Show);
+    fn close_request_interception_keeps_exit_permission_before_native_close_is_seen() {
+        let plan = close_request_interception_with_progress(false, true, false);
+        assert_eq!(plan, Some(CloseRequestInterception::Noop));
+    }
+
+    #[test]
+    fn close_request_interception_clears_exit_permission_after_native_close_disappears() {
+        let plan = close_request_interception_with_progress(false, true, true);
+        assert_eq!(
+            plan,
+            Some(CloseRequestInterception::ClearNativeClosePermission)
+        );
     }
 
     #[test]
