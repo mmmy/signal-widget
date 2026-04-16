@@ -100,6 +100,7 @@ fn apply_shell_effect(
             if let Err(err) = config_store.update_ui(|ui| ui.widget.visible = visible) {
                 warn!("failed to persist widget visibility: {}", err);
             }
+            ctx.request_repaint();
         }
     }
 }
@@ -166,7 +167,8 @@ pub fn run() {
                 config_store.clone(),
                 runtime_event_rx,
             );
-            let tray_adapter = match TrayAdapter::new(main_window.clone(), cc.egui_ctx.clone()) {
+            let tray_adapter =
+                match TrayAdapter::new(runtime_handle.clone(), config.ui.widget.visible) {
                 Ok(adapter) => Some(adapter),
                 Err(_err) => None,
             };
@@ -176,8 +178,8 @@ pub fn run() {
             tray_slot.borrow_mut().replace(tray_adapter);
 
             Ok(Box::new(SignalDeskApp::new(
+                config_store.clone(),
                 config,
-                config_path,
                 poller,
                 main_window,
                 runtime_slot

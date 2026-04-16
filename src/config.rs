@@ -108,7 +108,7 @@ impl Default for PollConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WidgetConfig {
     pub visible: bool,
