@@ -51,8 +51,13 @@ pub fn run() {
         Box::new(move |cc| {
             setup_chinese_fonts(&cc.egui_ctx);
             let api_client = ApiClient::new(&config.api);
-            let poller = PollerHandle::spawn(api_client, config.clone(), cc.egui_ctx.clone());
-            let (runtime, runtime_handle, runtime_event_rx) = Runtime::spawn(cc.egui_ctx.clone());
+            let mut poller = PollerHandle::spawn(api_client, config.clone(), cc.egui_ctx.clone());
+            let (runtime, runtime_handle, runtime_event_rx) =
+                Runtime::spawn(
+                    cc.egui_ctx.clone(),
+                    poller.command_tx.clone(),
+                    poller.take_event_rx(),
+                );
             let tray_adapter = TrayAdapter::new(runtime_handle.clone()).ok();
             let _ = runtime_handle.set_tray_available(tray_adapter.is_some());
 

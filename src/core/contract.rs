@@ -1,10 +1,20 @@
+use std::collections::{HashMap, HashSet};
+
+use crate::api::{SignalPage, SignalState};
 use crate::config::UiConfig;
 use crate::domain::SignalKey;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AppSnapshot {
+    pub signals: HashMap<SignalKey, SignalState>,
+    pub pending_read: HashSet<SignalKey>,
     pub unread_count: usize,
+    pub last_poll_ms: Option<i64>,
+    pub last_poll_ok: Option<bool>,
+    pub consecutive_poll_failures: u32,
+    pub last_meta: Option<(u64, u32, u32)>,
     pub last_poll_error: Option<String>,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +45,20 @@ pub enum UiAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppEvent {
     SnapshotUpdated(AppSnapshot),
+    PollerSnapshot {
+        fetched_at_ms: i64,
+        page: SignalPage,
+    },
+    PollFailed {
+        error: String,
+    },
+    MarkReadSynced {
+        key: SignalKey,
+    },
+    SyncFailed {
+        key: SignalKey,
+        error: String,
+    },
     AdapterAction { target: AdapterId, action: UiAction },
 }
 
