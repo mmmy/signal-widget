@@ -1,10 +1,14 @@
 use anyhow::{Context as _, Result};
-use eframe::egui;
-use std::sync::mpsc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use tokio::sync::broadcast;
 
-use crate::shell::MainWindowController;
+use crate::core::contract::{AppCommand, AppEvent};
+use crate::core::runtime::RuntimeHandle;
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
@@ -13,49 +17,54 @@ pub struct TrayAdapter {
     _event_pump: TrayEventPump,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TrayUserAction {
-    ShowMainWindow,
-    ExitApp,
+struct TrayMenuIds {
+    show_main: MenuId,
+    widget: MenuId,
+    exit: MenuId,
 }
 
-#[cfg(test)]
-fn tray_exit_is_process_level(action: TrayUserAction) -> bool {
-    matches!(action, TrayUserAction::ExitApp)
-}
-
-fn tray_action_requests_repaint(action: TrayUserAction) -> bool {
-    matches!(action, TrayUserAction::ShowMainWindow)
+impl TrayMenuIds {
+    #[cfg(test)]
+    fn for_test() -> Self {
+        Self {
+            show_main: MenuId::new("show-main"),
+            widget: MenuId::new("toggle-widget"),
+            exit: MenuId::new("exit"),
+        }
+    }
 }
 
 struct TrayEventPump {
-    shutdown_tx: mpsc::Sender<()>,
+    shutdown: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
 }
 
 impl TrayEventPump {
-    fn spawn(
-        show_id: MenuId,
-        exit_id: MenuId,
-        main_window: MainWindowController,
-        egui_ctx: egui::Context,
-    ) -> Self {
-        let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+    fn spawn(ids: TrayMenuIds, runtime: RuntimeHandle, initial_widget_visible: bool) -> Self {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let thread_shutdown = Arc::clone(&shutdown);
         let join = thread::spawn(move || {
+            let widget_visible = Arc::new(AtomicBool::new(initial_widget_visible));
+            let mut event_rx = runtime.subscribe_events();
+
             loop {
-                if shutdown_rx.try_recv().is_ok() {
+                if thread_shutdown.load(Ordering::SeqCst) {
                     break;
                 }
 
+                drain_runtime_events(&widget_visible, &mut event_rx);
+
                 while let Ok(event) = MenuEvent::receiver().try_recv() {
-                    if let Some(action) = menu_event_to_action(&event, &show_id, &exit_id) {
-                        apply_tray_action(action, &main_window, &egui_ctx);
+                    if let Some(command) =
+                        menu_event_to_command(&event, &ids, widget_visible.load(Ordering::SeqCst))
+                    {
+                        let _ = runtime.send(command);
                     }
                 }
 
                 while let Ok(event) = TrayIconEvent::receiver().try_recv() {
-                    if let Some(action) = map_tray_click_to_action(&event) {
-                        apply_tray_action(action, &main_window, &egui_ctx);
+                    if let Some(command) = map_tray_click_to_command(&event) {
+                        let _ = runtime.send(command);
                     }
                 }
 
@@ -64,7 +73,7 @@ impl TrayEventPump {
         });
 
         Self {
-            shutdown_tx,
+            shutdown,
             join: Some(join),
         }
     }
@@ -72,7 +81,7 @@ impl TrayEventPump {
 
 impl Drop for TrayEventPump {
     fn drop(&mut self) {
-        let _ = self.shutdown_tx.send(());
+        self.shutdown.store(true, Ordering::SeqCst);
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -80,20 +89,26 @@ impl Drop for TrayEventPump {
 }
 
 impl TrayAdapter {
-    pub fn new(main_window: MainWindowController, egui_ctx: egui::Context) -> Result<Self> {
+    pub fn new(runtime: RuntimeHandle, initial_widget_visible: bool) -> Result<Self> {
         let tray_menu = Menu::new();
-        let show_item = MenuItem::new("显示主窗口", true, None);
-        let exit_item = MenuItem::new("退出", true, None);
+        let show_main = MenuItem::new("显示主窗口", true, None);
+        let widget = MenuItem::new("切换小组件", true, None);
+        let exit = MenuItem::new("退出", true, None);
+        let ids = TrayMenuIds {
+            show_main: show_main.id().clone(),
+            widget: widget.id().clone(),
+            exit: exit.id().clone(),
+        };
         tray_menu
-            .append_items(&[&show_item, &PredefinedMenuItem::separator(), &exit_item])
+            .append_items(&[
+                &show_main,
+                &widget,
+                &PredefinedMenuItem::separator(),
+                &exit,
+            ])
             .context("failed to build tray menu")?;
 
-        let event_pump = TrayEventPump::spawn(
-            show_item.id().clone(),
-            exit_item.id().clone(),
-            main_window,
-            egui_ctx,
-        );
+        let event_pump = TrayEventPump::spawn(ids, runtime, initial_widget_visible);
 
         let tray_icon = TrayIconBuilder::new()
             .with_menu(Box::new(tray_menu))
@@ -110,45 +125,50 @@ impl TrayAdapter {
     }
 }
 
-fn apply_tray_action(
-    action: TrayUserAction,
-    main_window: &MainWindowController,
-    egui_ctx: &egui::Context,
+fn drain_runtime_events(
+    widget_visible: &AtomicBool,
+    event_rx: &mut broadcast::Receiver<AppEvent>,
 ) {
-    match action {
-        TrayUserAction::ShowMainWindow => {
-            main_window.show();
-            if tray_action_requests_repaint(action) {
-                egui_ctx.request_repaint();
+    loop {
+        match event_rx.try_recv() {
+            Ok(AppEvent::WidgetVisibilityChanged { visible }) => {
+                widget_visible.store(visible, Ordering::SeqCst);
             }
-        }
-        TrayUserAction::ExitApp => {
-            std::process::exit(0);
+            Ok(_) => {}
+            Err(broadcast::error::TryRecvError::Empty) => break,
+            Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(broadcast::error::TryRecvError::Closed) => break,
         }
     }
 }
 
-fn menu_event_to_action(
+fn menu_event_to_command(
     event: &MenuEvent,
-    show_id: &MenuId,
-    exit_id: &MenuId,
-) -> Option<TrayUserAction> {
-    if event.id == *show_id {
-        Some(TrayUserAction::ShowMainWindow)
-    } else if event.id == *exit_id {
-        Some(TrayUserAction::ExitApp)
+    ids: &TrayMenuIds,
+    widget_visible: bool,
+) -> Option<AppCommand> {
+    if event.id == ids.show_main {
+        Some(AppCommand::RequestShowMainWindow)
+    } else if event.id == ids.widget {
+        Some(if widget_visible {
+            AppCommand::RequestHideWidget
+        } else {
+            AppCommand::RequestShowWidget
+        })
+    } else if event.id == ids.exit {
+        Some(AppCommand::RequestExitApp)
     } else {
         None
     }
 }
 
-fn map_tray_click_to_action(event: &TrayIconEvent) -> Option<TrayUserAction> {
+fn map_tray_click_to_command(event: &TrayIconEvent) -> Option<AppCommand> {
     match event {
         TrayIconEvent::Click {
             button: MouseButton::Left,
             button_state: MouseButtonState::Up,
             ..
-        } => Some(TrayUserAction::ShowMainWindow),
+        } => Some(AppCommand::RequestShowMainWindow),
         _ => None,
     }
 }
@@ -188,41 +208,50 @@ fn default_tray_icon() -> Result<Icon> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tray_icon::menu::MenuId;
     use tray_icon::{MouseButton, MouseButtonState, Rect, TrayIconEvent, TrayIconId};
 
     #[test]
-    fn exit_action_requests_repaint_to_wake_hidden_window_loop() {
-        assert!(!tray_action_requests_repaint(TrayUserAction::ExitApp));
-    }
-
-    #[test]
-    fn exit_action_uses_process_level_shutdown() {
-        assert!(tray_exit_is_process_level(TrayUserAction::ExitApp));
-    }
-
-    #[test]
-    fn menu_event_for_show_id_maps_to_show_action() {
-        let show_id = MenuId::new("show-main");
-        let exit_id = MenuId::new("exit-app");
+    fn widget_menu_maps_to_show_when_hidden() {
+        let ids = TrayMenuIds::for_test();
         let event = MenuEvent {
-            id: MenuId::new("show-main"),
+            id: ids.widget.clone(),
         };
 
-        let action = menu_event_to_action(&event, &show_id, &exit_id);
-        assert_eq!(action, Some(TrayUserAction::ShowMainWindow));
+        let command = menu_event_to_command(&event, &ids, false);
+        assert!(matches!(command, Some(AppCommand::RequestShowWidget)));
     }
 
     #[test]
-    fn menu_event_for_exit_id_maps_to_exit_action() {
-        let show_id = MenuId::new("show-main");
-        let exit_id = MenuId::new("exit-app");
+    fn widget_menu_maps_to_hide_when_visible() {
+        let ids = TrayMenuIds::for_test();
         let event = MenuEvent {
-            id: MenuId::new("exit-app"),
+            id: ids.widget.clone(),
         };
 
-        let action = menu_event_to_action(&event, &show_id, &exit_id);
-        assert_eq!(action, Some(TrayUserAction::ExitApp));
+        let command = menu_event_to_command(&event, &ids, true);
+        assert!(matches!(command, Some(AppCommand::RequestHideWidget)));
+    }
+
+    #[test]
+    fn show_main_menu_maps_to_show_command() {
+        let ids = TrayMenuIds::for_test();
+        let event = MenuEvent {
+            id: ids.show_main.clone(),
+        };
+
+        let command = menu_event_to_command(&event, &ids, true);
+        assert!(matches!(command, Some(AppCommand::RequestShowMainWindow)));
+    }
+
+    #[test]
+    fn exit_menu_maps_to_exit_command() {
+        let ids = TrayMenuIds::for_test();
+        let event = MenuEvent {
+            id: ids.exit.clone(),
+        };
+
+        let command = menu_event_to_command(&event, &ids, true);
+        assert!(matches!(command, Some(AppCommand::RequestExitApp)));
     }
 
     #[test]
@@ -234,7 +263,7 @@ mod tests {
             button: MouseButton::Left,
             button_state: MouseButtonState::Up,
         };
-        let mapped = map_tray_click_to_action(&event);
-        assert_eq!(mapped, Some(TrayUserAction::ShowMainWindow));
+        let mapped = map_tray_click_to_command(&event);
+        assert!(matches!(mapped, Some(AppCommand::RequestShowMainWindow)));
     }
 }

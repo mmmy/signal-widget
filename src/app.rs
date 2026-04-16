@@ -1,16 +1,17 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::TimeZone;
 use eframe::egui::{self, Color32};
+use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::alerts::AlertEngine;
 use crate::api::SignalState;
+use crate::config_store::ConfigStore;
 use crate::config::{AppConfig, GroupConfig};
-use crate::core::contract::{AdapterId, AppEvent, AppSnapshot, UiAction};
+use crate::core::contract::AppSnapshot;
 use crate::core::queries::unread::{collect_new_unread_keys, effective_unread_keys};
 use crate::core::runtime::{Runtime, RuntimeHandle};
 use crate::domain::{compare_period_desc, period_to_millis, Side, SignalKey};
@@ -48,8 +49,8 @@ enum CloseRequestInterception {
 }
 
 pub struct SignalDeskApp {
+    config_store: ConfigStore,
     config: AppConfig,
-    config_path: PathBuf,
     _poller: PollerHandle,
     main_window: MainWindowController,
     snapshot: AppSnapshot,
@@ -62,8 +63,9 @@ pub struct SignalDeskApp {
     // Keep the runtime alive for the lifetime of the app.
     _runtime: Runtime,
     runtime_handle: RuntimeHandle,
-    runtime_event_rx: std::sync::mpsc::Receiver<AppEvent>,
+    runtime_snapshot_rx: watch::Receiver<AppSnapshot>,
     native_close_in_progress: bool,
+    widget_viewport_visible: bool,
 }
 
 pub fn setup_chinese_fonts(ctx: &egui::Context) {
@@ -96,18 +98,18 @@ pub fn setup_chinese_fonts(ctx: &egui::Context) {
 
 impl SignalDeskApp {
     pub fn new(
+        config_store: ConfigStore,
         config: AppConfig,
-        config_path: PathBuf,
         poller: PollerHandle,
         main_window: MainWindowController,
         runtime: Runtime,
         runtime_handle: RuntimeHandle,
-        runtime_event_rx: std::sync::mpsc::Receiver<AppEvent>,
+        runtime_snapshot_rx: watch::Receiver<AppSnapshot>,
     ) -> Self {
         let _ = runtime_handle.send(crate::core::contract::AppCommand::ForcePoll);
         Self {
+            config_store,
             config,
-            config_path,
             _poller: poller,
             main_window,
             snapshot: AppSnapshot::default(),
@@ -119,19 +121,37 @@ impl SignalDeskApp {
             local_error: None,
             _runtime: runtime,
             runtime_handle,
-            runtime_event_rx,
+            runtime_snapshot_rx,
             native_close_in_progress: false,
+            widget_viewport_visible: false,
         }
     }
 
     fn save_config(&mut self) {
-        match self.config.save_to(&self.config_path) {
-            Ok(()) => {
-                info!("config saved to {}", self.config_path.display());
+        match self
+            .config_store
+            .update_ui(|ui| {
+                let widget = ui.widget.clone();
+                *ui = self.config.ui.clone();
+                ui.widget = widget;
+            })
+        {
+            Ok(updated) => {
+                self.config = updated;
+                info!("config saved to {}", self.config_store.path().display());
                 self.local_error = None;
             }
             Err(err) => self.local_error = Some(format!("save config failed: {}", err)),
         }
+    }
+
+    fn sync_widget_config_from_store(&mut self) -> bool {
+        let shared = self.config_store.snapshot();
+        if self.config.ui.widget == shared.ui.widget {
+            return false;
+        }
+        self.config.ui.widget = shared.ui.widget;
+        true
     }
 
     fn apply_window_mode(&mut self, ctx: &egui::Context) {
@@ -469,39 +489,78 @@ impl SignalDeskApp {
         popover.inner || popover.response.hovered()
     }
 
-    fn drain_runtime_events(&mut self, ctx: &egui::Context) -> bool {
-        let mut had_events = false;
-        while let Ok(event) = self.runtime_event_rx.try_recv() {
-            had_events = true;
-            match event {
-                AppEvent::SnapshotUpdated(snapshot) => {
-                    let previous_unread =
-                        effective_unread_keys(&self.snapshot.signals, &self.snapshot.pending_read);
-                    let current_unread =
-                        effective_unread_keys(&snapshot.signals, &snapshot.pending_read);
-
-                    if self.has_seen_snapshot {
-                        let new_unread = collect_new_unread_keys(&previous_unread, &current_unread);
-                        self.alerts.on_new_unread(
-                            chrono::Utc::now().timestamp_millis(),
-                            &new_unread,
-                            self.config.ui.notifications,
-                            self.config.ui.sound,
-                        );
-                    } else {
-                        self.has_seen_snapshot = true;
-                    }
-                    self.snapshot = snapshot;
+    fn drain_runtime_snapshot(&mut self) -> bool {
+        let mut had_snapshot = false;
+        loop {
+            match self.runtime_snapshot_rx.has_changed() {
+                Ok(true) => {
+                    let snapshot = self.runtime_snapshot_rx.borrow_and_update().clone();
+                    had_snapshot = apply_runtime_snapshot_update(
+                        &mut self.snapshot,
+                        &mut self.has_seen_snapshot,
+                        &mut self.alerts,
+                        self.config.ui.notifications,
+                        self.config.ui.sound,
+                        snapshot,
+                        chrono::Utc::now().timestamp_millis(),
+                    ) || had_snapshot;
                 }
-                AppEvent::AdapterAction {
-                    target: AdapterId::MainWindow,
-                    action,
-                } => apply_ui_action(ctx, &self.main_window, action),
-                _ => {}
+                Ok(false) => break,
+                Err(_) => break,
             }
         }
-        had_events
+        had_snapshot
     }
+
+    fn sync_widget_viewport(&mut self, ctx: &egui::Context) {
+        if self.config.ui.widget.visible {
+            let total_unread = self.total_unread_count();
+            crate::adapters::floating_widget::show_widget_viewport(
+                ctx,
+                &self.snapshot,
+                total_unread,
+                &self.config.ui.widget,
+                &self.config_store,
+            );
+            self.widget_viewport_visible = true;
+        } else if self.widget_viewport_visible {
+            ctx.send_viewport_cmd_to(
+                crate::adapters::floating_widget::widget_viewport_id(),
+                egui::ViewportCommand::Close,
+            );
+            self.widget_viewport_visible = false;
+        }
+    }
+}
+
+fn apply_runtime_snapshot_update(
+    current_snapshot: &mut AppSnapshot,
+    has_seen_snapshot: &mut bool,
+    alerts: &mut AlertEngine,
+    notifications_enabled: bool,
+    sound_enabled: bool,
+    next_snapshot: AppSnapshot,
+    now_ms: i64,
+) -> bool {
+    let previous_unread =
+        effective_unread_keys(&current_snapshot.signals, &current_snapshot.pending_read);
+    let current_unread =
+        effective_unread_keys(&next_snapshot.signals, &next_snapshot.pending_read);
+
+    if *has_seen_snapshot {
+        let new_unread = collect_new_unread_keys(&previous_unread, &current_unread);
+        alerts.on_new_unread(
+            now_ms,
+            &new_unread,
+            notifications_enabled,
+            sound_enabled,
+        );
+    } else {
+        *has_seen_snapshot = true;
+    }
+
+    *current_snapshot = next_snapshot;
+    true
 }
 
 fn load_cjk_font_bytes() -> Option<(String, Vec<u8>)> {
@@ -529,6 +588,7 @@ fn load_cjk_font_bytes() -> Option<(String, Vec<u8>)> {
 
 impl eframe::App for SignalDeskApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let widget_config_changed = self.sync_widget_config_from_store();
         self.apply_window_mode(ctx);
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         match close_request_interception_with_progress(
@@ -559,7 +619,8 @@ impl eframe::App for SignalDeskApp {
             }
             None => {}
         }
-        let had_runtime_events = self.drain_runtime_events(ctx);
+        let had_runtime_events = self.drain_runtime_snapshot();
+        self.sync_widget_viewport(ctx);
         let now_ms = chrono::Utc::now().timestamp_millis();
         let mut trigger_hovered = false;
 
@@ -700,7 +761,7 @@ impl eframe::App for SignalDeskApp {
 
         if self.hover_panel.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
-        } else if had_runtime_events {
+        } else if had_runtime_events || widget_config_changed {
             ctx.request_repaint();
         }
     }
@@ -865,22 +926,6 @@ fn close_request_interception_with_progress(
         Some(CloseRequestInterception::AllowNativeClose)
     } else {
         Some(CloseRequestInterception::CancelAndDispatch)
-    }
-}
-
-fn apply_ui_action(ctx: &egui::Context, main_window: &MainWindowController, action: UiAction) {
-    match action {
-        UiAction::ShowMainWindow => {
-            main_window.show();
-            ctx.request_repaint();
-        }
-        UiAction::ExitProcess => {
-            main_window.request_exit();
-        }
-        UiAction::HideMainWindowToTray => {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            main_window.hide_to_tray();
-        }
     }
 }
 
@@ -1066,5 +1111,31 @@ mod tests {
     fn format_elapsed_since_local_shows_minutes() {
         let text = format_elapsed_since_local(100_000, 280_000);
         assert_eq!(text, "3 分钟前");
+    }
+
+    #[test]
+    fn apply_runtime_snapshot_update_replaces_snapshot_from_watch_state() {
+        let mut current = AppSnapshot::default();
+        let mut has_seen_snapshot = false;
+        let mut alerts = AlertEngine::default();
+        let next = AppSnapshot {
+            unread_count: 3,
+            last_poll_ms: Some(42),
+            ..Default::default()
+        };
+
+        let changed = apply_runtime_snapshot_update(
+            &mut current,
+            &mut has_seen_snapshot,
+            &mut alerts,
+            false,
+            false,
+            next.clone(),
+            1_000,
+        );
+
+        assert!(changed);
+        assert_eq!(current, next);
+        assert!(has_seen_snapshot);
     }
 }
