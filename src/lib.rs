@@ -6,12 +6,14 @@ pub mod config;
 pub mod core;
 pub mod domain;
 pub mod poller;
+pub mod shell;
 pub mod unread_panel;
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use tracing::Level;
+use winit::raw_window_handle::HasWindowHandle;
 
 use crate::adapters::tray::TrayAdapter;
 use crate::api::ApiClient;
@@ -19,10 +21,9 @@ use crate::app::{setup_chinese_fonts, SignalDeskApp};
 use crate::config::AppConfig;
 use crate::core::runtime::Runtime;
 use crate::poller::PollerHandle;
+use crate::shell::MainWindowController;
 
 pub fn run() {
-    init_tracing();
-
     let (config, config_path) = match AppConfig::load_or_create() {
         Ok(data) => data,
         Err(err) => {
@@ -30,6 +31,7 @@ pub fn run() {
             return;
         }
     };
+    init_tracing();
     println!("using config: {}", config_path.display());
 
     let native_options = eframe::NativeOptions {
@@ -58,7 +60,12 @@ pub fn run() {
                     poller.command_tx.clone(),
                     poller.take_event_rx(),
                 );
-            let tray_adapter = TrayAdapter::new(runtime_handle.clone()).ok();
+            let main_window =
+                MainWindowController::from_raw_window_handle(cc.window_handle()?.as_raw())?;
+            let tray_adapter = match TrayAdapter::new(main_window.clone()) {
+                Ok(adapter) => Some(adapter),
+                Err(_err) => None,
+            };
             let _ = runtime_handle.set_tray_available(tray_adapter.is_some());
 
             runtime_slot.borrow_mut().replace(runtime);
@@ -68,6 +75,7 @@ pub fn run() {
                 config,
                 config_path,
                 poller,
+                main_window,
                 runtime_slot
                     .borrow_mut()
                     .take()
