@@ -24,7 +24,7 @@
 
 - [x] Full regression suite passes after separation work so far
   Evidence command: `cargo test -- --nocapture`
-  Result: `40 passed; 0 failed`.
+  Result: `43 passed; 0 failed`.
 
 - [x] Runtime is the live source of truth for adapter events and lifecycle
   Evidence: [runtime.rs](/F:/test/signal-desk-v2/.worktrees/runtime-adapter-separation/src/core/runtime.rs) now handles lifecycle commands and emits `AdapterAction` events. [app.rs](/F:/test/signal-desk-v2/.worktrees/runtime-adapter-separation/src/app.rs) consumes those runtime events and applies viewport actions.

@@ -295,4 +295,5 @@ src/
 2. Tray 与 floating widget 的 adapter command shell 已建立
 3. Poll request shaping 与 window lifecycle policy 已从旧 UI 逻辑中抽出
 4. Binary 已改为通过 library entrypoint 启动，避免 lib/bin 双模块图漂移
-5. Runtime 仍未成为 adapter 事件与生命周期的唯一实时来源，这部分仍需后续任务完成
+5. Runtime 已成为 adapter 事件与窗口生命周期的唯一实时来源
+6. `ForcePoll` / `MarkRead` / `PollerEvent` 已经通过 Runtime 闭环流转，主窗口改为渲染 runtime snapshot
