@@ -48,4 +48,4 @@ dirs = "5"
 
 [target.'cfg(windows)'.dependencies]
 winrt-notification = "0.5"
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_Debug"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_Debug", "Win32_Graphics_Dwm"] }
