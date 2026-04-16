@@ -16,7 +16,8 @@ use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, DefWindowProcW, FindWindowW, GetClientRect, GetCursorPos,
     GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, GWLP_WNDPROC, HTCAPTION,
-    HTTRANSPARENT, WM_NCDESTROY, WM_NCHITTEST, WS_EX_LAYERED,
+    HTTRANSPARENT, WM_NCDESTROY, WM_NCHITTEST, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -29,7 +30,7 @@ static WIDGET_STATES: Lazy<Mutex<HashMap<isize, WidgetNativeState>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 pub fn ensure_layered_style(existing: isize) -> isize {
-    existing | WS_EX_LAYERED as isize
+    existing | WS_EX_LAYERED as isize | WS_EX_TOOLWINDOW as isize | WS_EX_NOACTIVATE as isize
 }
 
 pub fn register_widget_state(hwnd: isize, original_wndproc: isize, radius: f32) {
@@ -181,6 +182,13 @@ mod tests {
         let original = 0x20_isize;
         let updated = ensure_layered_style(original);
         assert_ne!(updated & 0x20, 0);
+    }
+
+    #[test]
+    fn ensure_layered_style_adds_toolwindow_and_noactivate() {
+        let updated = ensure_layered_style(0);
+        assert_ne!(updated & WS_EX_TOOLWINDOW as isize, 0);
+        assert_ne!(updated & WS_EX_NOACTIVATE as isize, 0);
     }
 
     #[test]

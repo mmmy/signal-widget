@@ -41,6 +41,7 @@ pub fn show_widget_viewport(
         .with_title(widget_viewport_title())
         .with_decorations(false)
         .with_transparent(true)
+        .with_taskbar(false)
         .with_resizable(false)
         .with_inner_size([widget.size, widget.size])
         .with_position([widget.x, widget.y])
