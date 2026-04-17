@@ -9,8 +9,8 @@ use tracing::{info, warn};
 
 use crate::alerts::AlertEngine;
 use crate::api::SignalState;
-use crate::config_store::ConfigStore;
 use crate::config::{AppConfig, GroupConfig};
+use crate::config_store::ConfigStore;
 use crate::core::contract::AppSnapshot;
 use crate::core::queries::unread::{collect_new_unread_keys, effective_unread_keys};
 use crate::core::runtime::{Runtime, RuntimeHandle};
@@ -46,6 +46,14 @@ enum CloseRequestInterception {
     AllowNativeClose,
     ClearNativeClosePermission,
     Noop,
+}
+
+fn signal_level_row_spacing_y() -> f32 {
+    2.0
+}
+
+fn signal_level_row_height() -> f32 {
+    16.0
 }
 
 pub struct SignalDeskApp {
@@ -128,14 +136,11 @@ impl SignalDeskApp {
     }
 
     fn save_config(&mut self) {
-        match self
-            .config_store
-            .update_ui(|ui| {
-                let widget = ui.widget.clone();
-                *ui = self.config.ui.clone();
-                ui.widget = widget;
-            })
-        {
+        match self.config_store.update_ui(|ui| {
+            let widget = ui.widget.clone();
+            *ui = self.config.ui.clone();
+            ui.widget = widget;
+        }) {
             Ok(updated) => {
                 self.config = updated;
                 info!("config saved to {}", self.config_store.path().display());
@@ -210,11 +215,7 @@ impl SignalDeskApp {
         for period in &group.periods {
             for signal_type in &group.signal_types {
                 let key = SignalKey::new(group.symbol.clone(), period.clone(), signal_type.clone());
-                let Some(is_unread) = self
-                    .snapshot
-                    .signals
-                    .get(&key)
-                    .map(|signal| !signal.read)
+                let Some(is_unread) = self.snapshot.signals.get(&key).map(|signal| !signal.read)
                 else {
                     continue;
                 };
@@ -231,10 +232,13 @@ impl SignalDeskApp {
             return;
         }
 
-        if let Err(err) = self.runtime_handle.send(crate::core::contract::AppCommand::MarkRead {
-            key: key.clone(),
-            read: true,
-        }) {
+        if let Err(err) = self
+            .runtime_handle
+            .send(crate::core::contract::AppCommand::MarkRead {
+                key: key.clone(),
+                read: true,
+            })
+        {
             let message = format!(
                 "send mark-read failed [{} {} {}]: {}",
                 key.symbol, key.period, key.signal_type, err
@@ -292,7 +296,10 @@ impl SignalDeskApp {
         }
 
         ui.horizontal(|ui| {
-            ui.add_sized([28.0, 14.0], egui::Label::new(level_text));
+            ui.add_sized(
+                [28.0, signal_level_row_height()],
+                egui::Label::new(level_text),
+            );
             paint_60_bar_line(ui, &bars);
         });
     }
@@ -338,9 +345,12 @@ impl SignalDeskApp {
             periods.sort_by(|a, b| compare_period_desc(a, b));
 
             ui.add_space(4.0);
-            for period in periods {
-                self.render_period_row(ui, group, &period);
-            }
+            ui.scope(|ui| {
+                ui.spacing_mut().item_spacing.y = signal_level_row_spacing_y();
+                for period in periods {
+                    self.render_period_row(ui, group, &period);
+                }
+            });
         });
         unread_trigger_hovered
     }
@@ -544,17 +554,11 @@ fn apply_runtime_snapshot_update(
 ) -> bool {
     let previous_unread =
         effective_unread_keys(&current_snapshot.signals, &current_snapshot.pending_read);
-    let current_unread =
-        effective_unread_keys(&next_snapshot.signals, &next_snapshot.pending_read);
+    let current_unread = effective_unread_keys(&next_snapshot.signals, &next_snapshot.pending_read);
 
     if *has_seen_snapshot {
         let new_unread = collect_new_unread_keys(&previous_unread, &current_unread);
-        alerts.on_new_unread(
-            now_ms,
-            &new_unread,
-            notifications_enabled,
-            sound_enabled,
-        );
+        alerts.on_new_unread(now_ms, &new_unread, notifications_enabled, sound_enabled);
     } else {
         *has_seen_snapshot = true;
     }
@@ -668,8 +672,8 @@ impl eframe::App for SignalDeskApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let total_unread = self.total_unread_count();
-            let mut total_text = egui::RichText::new(format!("Total unread: {total_unread}"))
-                .color(Color32::BLACK);
+            let mut total_text =
+                egui::RichText::new(format!("Total unread: {total_unread}")).color(Color32::BLACK);
             if total_unread > 0 {
                 total_text = total_text.background_color(Color32::from_rgb(245, 173, 0));
             }
@@ -784,7 +788,7 @@ fn merge_bar_cell(cell: &mut BarCell, side: Side, unread: bool) {
 }
 
 fn paint_60_bar_line(ui: &mut egui::Ui, cells: &[BarCell; 60]) {
-    let desired = egui::vec2(ui.available_width(), 14.0);
+    let desired = egui::vec2(ui.available_width(), signal_level_row_height());
     let (rect, _response) = ui.allocate_exact_size(desired, egui::Sense::hover());
     let painter = ui.painter_at(rect);
     let gap = 1.0;
@@ -890,7 +894,7 @@ fn period_has_unread(
         );
         signals
             .get(&key)
-        .is_some_and(|signal| !signal.read && !pending_read.contains(&key))
+            .is_some_and(|signal| !signal.read && !pending_read.contains(&key))
     })
 }
 
@@ -977,6 +981,16 @@ mod tests {
         assert_eq!(visual.text, "15");
         assert_eq!(visual.color, None);
         assert!(!visual.strong);
+    }
+
+    #[test]
+    fn signal_level_row_spacing_matches_compact_list_tuning() {
+        assert_eq!(signal_level_row_spacing_y(), 2.0);
+    }
+
+    #[test]
+    fn signal_level_row_height_matches_compact_list_tuning() {
+        assert_eq!(signal_level_row_height(), 16.0);
     }
 
     #[test]
