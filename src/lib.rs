@@ -14,8 +14,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::thread;
 
-use tracing::{warn, Level};
 use tokio::sync::broadcast;
+use tracing::{warn, Level};
 use winit::raw_window_handle::HasWindowHandle;
 
 use crate::adapters::tray::TrayAdapter;
@@ -169,9 +169,9 @@ pub fn run() {
             );
             let tray_adapter =
                 match TrayAdapter::new(runtime_handle.clone(), config.ui.widget.visible) {
-                Ok(adapter) => Some(adapter),
-                Err(_err) => None,
-            };
+                    Ok(adapter) => Some(adapter),
+                    Err(_err) => None,
+                };
             let _ = runtime_handle.set_tray_available(tray_adapter.is_some());
 
             runtime_slot.borrow_mut().replace(runtime);

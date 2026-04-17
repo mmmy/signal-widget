@@ -61,7 +61,9 @@ pub enum AppEvent {
         key: SignalKey,
         error: String,
     },
-    WidgetVisibilityChanged { visible: bool },
+    WidgetVisibilityChanged {
+        visible: bool,
+    },
     ShellCommand(ShellCommand),
 }
 

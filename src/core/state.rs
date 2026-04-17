@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use crate::api::{SignalPage, SignalState};
 use crate::domain::SignalKey;
 
-use super::queries::unread::effective_unread_keys;
 use super::contract::AppSnapshot;
+use super::queries::unread::effective_unread_keys;
 
 #[derive(Debug, Default, Clone)]
 pub struct AppState {
@@ -39,7 +39,8 @@ impl AppState {
         let mut next = HashMap::new();
         for row in &page.data {
             for (signal_type, state) in &row.signals {
-                let key = SignalKey::new(row.symbol.clone(), row.period.clone(), signal_type.clone());
+                let key =
+                    SignalKey::new(row.symbol.clone(), row.period.clone(), signal_type.clone());
                 let mut next_state = state.clone();
                 if let Some(&floor_t) = self.local_read_floor_t.get(&key) {
                     if next_state.t <= floor_t {

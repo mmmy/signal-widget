@@ -56,48 +56,49 @@ pub fn show_widget_viewport(
     ctx.show_viewport_deferred(viewport_id, builder, {
         let native_installed = Arc::clone(&native_installed);
         move |viewport_ctx, class| {
-        if matches!(class, ViewportClass::Embedded) {
-            return;
-        }
+            if matches!(class, ViewportClass::Embedded) {
+                return;
+            }
 
-        if should_install_native(&native_installed) {
-            #[cfg(target_os = "windows")]
-            unsafe {
-                if let Some(hwnd) =
-                    crate::shell::windows::widget_window::find_widget_hwnd(widget_viewport_title())
-                {
-                    crate::shell::windows::widget_window::apply_widget_surface_style(hwnd);
-                    crate::shell::windows::widget_window::install_widget_hit_test(
-                        hwnd,
-                        widget.size / 2.0,
-                    );
-                    mark_native_install(&native_installed);
+            if should_install_native(&native_installed) {
+                #[cfg(target_os = "windows")]
+                unsafe {
+                    if let Some(hwnd) = crate::shell::windows::widget_window::find_widget_hwnd(
+                        widget_viewport_title(),
+                    ) {
+                        crate::shell::windows::widget_window::apply_widget_surface_style(hwnd);
+                        crate::shell::windows::widget_window::install_widget_hit_test(
+                            hwnd,
+                            widget.size / 2.0,
+                        );
+                        mark_native_install(&native_installed);
+                    }
+                }
+            }
+
+            egui::CentralPanel::default()
+                .frame(egui::Frame::none().fill(egui::Color32::TRANSPARENT))
+                .show(viewport_ctx, |ui| {
+                    let vm = build_view_model(&snapshot, unread_count);
+                    let response = render_widget(ui, widget.size, &vm);
+                    if response.drag_started() {
+                        viewport_ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+                    }
+                });
+
+            if !viewport_ctx.input(|i| i.pointer.primary_down()) {
+                if let Some(rect) = viewport_ctx.input(|i| i.viewport().outer_rect) {
+                    let pos = rect.min;
+                    if (pos.x - widget.x).abs() > 0.5 || (pos.y - widget.y).abs() > 0.5 {
+                        let _ = config_store.update_ui(|ui| {
+                            ui.widget.x = pos.x;
+                            ui.widget.y = pos.y;
+                        });
+                    }
                 }
             }
         }
-
-        egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(egui::Color32::TRANSPARENT))
-            .show(viewport_ctx, |ui| {
-            let vm = build_view_model(&snapshot, unread_count);
-            let response = render_widget(ui, widget.size, &vm);
-            if response.drag_started() {
-                viewport_ctx.send_viewport_cmd(ViewportCommand::StartDrag);
-            }
-        });
-
-        if !viewport_ctx.input(|i| i.pointer.primary_down()) {
-            if let Some(rect) = viewport_ctx.input(|i| i.viewport().outer_rect) {
-                let pos = rect.min;
-                if (pos.x - widget.x).abs() > 0.5 || (pos.y - widget.y).abs() > 0.5 {
-                    let _ = config_store.update_ui(|ui| {
-                        ui.widget.x = pos.x;
-                        ui.widget.y = pos.y;
-                    });
-                }
-            }
-        }
-    }});
+    });
 }
 
 #[cfg(test)]

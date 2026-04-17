@@ -212,9 +212,15 @@ fn handle_poller_event(
     snapshot_tx: &watch::Sender<AppSnapshot>,
 ) {
     match event {
-        PollerEvent::Snapshot { fetched_at_ms, page } => {
+        PollerEvent::Snapshot {
+            fetched_at_ms,
+            page,
+        } => {
             state.apply_snapshot(fetched_at_ms, &page);
-            let _ = event_tx.send(AppEvent::PollerSnapshot { fetched_at_ms, page });
+            let _ = event_tx.send(AppEvent::PollerSnapshot {
+                fetched_at_ms,
+                page,
+            });
             publish_snapshot(state, event_tx, snapshot_tx);
         }
         PollerEvent::PollFailed { error } => {

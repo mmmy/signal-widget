@@ -100,12 +100,7 @@ impl TrayAdapter {
             exit: exit.id().clone(),
         };
         tray_menu
-            .append_items(&[
-                &show_main,
-                &widget,
-                &PredefinedMenuItem::separator(),
-                &exit,
-            ])
+            .append_items(&[&show_main, &widget, &PredefinedMenuItem::separator(), &exit])
             .context("failed to build tray menu")?;
 
         let event_pump = TrayEventPump::spawn(ids, runtime, initial_widget_visible);
@@ -125,10 +120,7 @@ impl TrayAdapter {
     }
 }
 
-fn drain_runtime_events(
-    widget_visible: &AtomicBool,
-    event_rx: &mut broadcast::Receiver<AppEvent>,
-) {
+fn drain_runtime_events(widget_visible: &AtomicBool, event_rx: &mut broadcast::Receiver<AppEvent>) {
     loop {
         match event_rx.try_recv() {
             Ok(AppEvent::WidgetVisibilityChanged { visible }) => {
